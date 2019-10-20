@@ -1,5 +1,5 @@
 use bytes::{ByteOrder, BigEndian};
-use super::{Digest, DigestAlgorithm};
+use super::{Digest, DigestAlgorithmConfig};
 
 const K: [u64;80] = [
    0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
@@ -25,7 +25,7 @@ const K: [u64;80] = [
 ];
 
 #[derive(Clone)]
-pub struct Sha384 {
+struct Sha384 {
     state: [u64;8],
     buffer: [u8;128],
     buffer_pos: usize,
@@ -33,6 +33,24 @@ pub struct Sha384 {
 }
 
 impl Sha384 {
+    fn new() -> Sha384 {
+        Sha384 {
+            state: [
+                0xcbbb9d5dc1059ed8,
+                0x629a292a367cd507,
+                0x9159015a3070dd17,
+                0x152fecd8f70e5939,
+                0x67332667ffc00b31,
+                0x8eb44a8768581511,
+                0xdb0c2e0d64f98fa7,
+                0x47b5481dbefa4fa4,
+            ],
+            buffer: [0;128],
+            buffer_pos: 0,
+            bytes_seen: 0,
+        }
+    }
+
     fn ch(x: u64, y: u64, z: u64) -> u64 {
         (x & y) ^ ((!x) & z)
     }
@@ -99,27 +117,16 @@ impl Sha384 {
     } 
 }
 
-impl DigestAlgorithm for Sha384 {
-    type DigestType = Sha384;
+#[derive(Clone)]
+pub struct Sha384AlgorithmConfig {
 
-    fn block_size() -> usize { 128 }
-    fn result_size() -> usize { 48 }
-    fn new() -> Box<Sha384> {
-        Box::new(Sha384 {
-            state: [
-                0xcbbb9d5dc1059ed8,
-                0x629a292a367cd507,
-                0x9159015a3070dd17,
-                0x152fecd8f70e5939,
-                0x67332667ffc00b31,
-                0x8eb44a8768581511,
-                0xdb0c2e0d64f98fa7,
-                0x47b5481dbefa4fa4,
-            ],
-            buffer: [0;128],
-            buffer_pos: 0,
-            bytes_seen: 0,
-        })
+}
+
+impl DigestAlgorithmConfig for Sha384AlgorithmConfig {
+    fn block_size(&self) -> usize { 128 }
+    fn result_size(&self) -> usize { 48 }
+    fn create(&self) -> Box<dyn Digest> {
+        Box::new(Sha384::new())
     }
 }
 
@@ -168,7 +175,7 @@ impl Digest for Sha384 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Digest, Sha384, DigestAlgorithm};
+    use super::{Digest, Sha384};
 
     #[test]
     fn test_digest() {

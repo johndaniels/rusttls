@@ -1,5 +1,5 @@
 use bytes::{ByteOrder, BigEndian};
-use super::{Digest, DigestAlgorithm};
+use super::{Digest, DigestAlgorithmConfig};
 
 const K: [u32;64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -20,7 +20,7 @@ const K: [u32;64] = [
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 #[derive(Clone)]
-pub struct Sha256 {
+struct Sha256 {
     state: [u32;8],
     buffer: [u8;64],
     buffer_pos: usize,
@@ -28,6 +28,24 @@ pub struct Sha256 {
 }
 
 impl Sha256 {
+    fn new() -> Sha256 {
+        Sha256 {
+            state: [
+                0x6a09e667,
+                0xbb67ae85,
+                0x3c6ef372,
+                0xa54ff53a,
+                0x510e527f,
+                0x9b05688c,
+                0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            buffer: [0;64],
+            buffer_pos: 0,
+            bytes_seen: 0,
+        }
+    }
+
     fn ch(x: u32, y: u32, z: u32) -> u32 {
         (x & y) ^ ((!x) & z)
     }
@@ -94,27 +112,16 @@ impl Sha256 {
     } 
 }
 
-impl DigestAlgorithm for Sha256 {
-    type DigestType = Sha256;
+#[derive(Clone)]
+pub struct Sha256AlgorithmConfig {
+}
 
-    fn block_size() -> usize { 64 }
-    fn result_size() -> usize { 32 }
-    fn new() -> Box<Sha256> {
-        Box::new(Sha256 {
-            state: [
-                0x6a09e667,
-                0xbb67ae85,
-                0x3c6ef372,
-                0xa54ff53a,
-                0x510e527f,
-                0x9b05688c,
-                0x1f83d9ab,
-                0x5be0cd19,
-            ],
-            buffer: [0;64],
-            buffer_pos: 0,
-            bytes_seen: 0,
-        })
+
+impl DigestAlgorithmConfig for Sha256AlgorithmConfig {
+    fn block_size(&self) -> usize { 64 }
+    fn result_size(&self) -> usize { 32 }
+    fn create(&self) -> Box<dyn Digest> {
+        Box::new(Sha256::new())
     }
 }
 
@@ -164,7 +171,7 @@ impl Digest for Sha256 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Digest, Sha256, DigestAlgorithm};
+    use super::{Digest, Sha256};
 
     #[test]
     fn test_digest() {

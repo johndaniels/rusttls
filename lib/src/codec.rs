@@ -3,7 +3,7 @@ use tokio::codec::{Encoder, Decoder, Framed};
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::convert::TryInto;
 use super::messages::{ParseError, Record, ReadFromBuffer, WriteToBuffer};
-use super::BytesCursor;
+use super::client::BytesCursor;
 
 pub fn tls_framed<T: AsyncRead + AsyncWrite>(io: T) -> Framed<T, TlsRecordCodec> {
     Framed::new(io, TlsRecordCodec {})

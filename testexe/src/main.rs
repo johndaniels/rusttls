@@ -1,4 +1,4 @@
 fn main() {
-    tlslib::tls::connect().unwrap();
+    tlslib::client::connect().unwrap();
     println!("Hello, world!");
 }

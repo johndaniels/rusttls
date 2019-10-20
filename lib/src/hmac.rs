@@ -6,8 +6,9 @@ trait MessageAuthenticationCode {
     fn finalize(&mut self) -> Vec<u8>;
 }
 
-struct Hmac<Algorithm: DigestAlgorithm> {
-    digest: Box<Algorithm::DigestType>,
+struct Hmac {
+    digest: Box<dyn Digest>,
+    digest_algorithm: DigestAlgorithm,
     key: Vec<u8>,
 }
 
@@ -24,27 +25,28 @@ fn pad_key(key: &[u8], size: usize, byte_xor: u8) -> Vec<u8> {
     return xor_key;
 }
 
-impl <Algorithm: DigestAlgorithm> Hmac<Algorithm> {
-    fn new(key: &[u8]) -> Hmac<Algorithm> {
+impl  Hmac {
+    fn new(digest_algorithm: DigestAlgorithm, key: &[u8]) -> Hmac {
         let mut final_key: Vec<u8>;
-        if (key.len() > Algorithm::block_size()) {
-            let mut hash = Algorithm::new();
+        if (key.len() > digest_algorithm.block_size()) {
+            let mut hash = digest_algorithm.create();
             hash.update(key);
             final_key = hash.finalize();
         } else {
             final_key = key.to_vec();
         }
-        let mut result = Hmac::<Algorithm> {
-            digest: Algorithm::new(),
+        let mut result = Hmac {
+            digest: digest_algorithm.create(),
+            digest_algorithm: digest_algorithm,
             key: final_key.clone(),
         };
-        let ipad_key = pad_key(&final_key, Algorithm::block_size(), 0x36);
+        let ipad_key = pad_key(&final_key, digest_algorithm.block_size(), 0x36);
         result.update(&ipad_key);
         result
     }
 }
 
-impl<Algorithm: DigestAlgorithm> MessageAuthenticationCode for Hmac<Algorithm> {
+impl MessageAuthenticationCode for Hmac {
     fn update(&mut self, update_buf: &[u8]) {
         self.digest.update(update_buf);
     }
@@ -52,29 +54,29 @@ impl<Algorithm: DigestAlgorithm> MessageAuthenticationCode for Hmac<Algorithm> {
     fn finalize(&mut self) -> Vec<u8> {
         let inner_digest_result = self.digest.finalize();
 
-        let mut outer_digest = Algorithm::new();
-        let opad_key = pad_key(&self.key, Algorithm::block_size(), 0x5C);
+        let mut outer_digest = self.digest_algorithm.create();
+        let opad_key = pad_key(&self.key, self.digest_algorithm.block_size(), 0x5C);
         outer_digest.update(&opad_key);
         outer_digest.update(&inner_digest_result);
         return outer_digest.finalize();
     }
 }
 
-fn hmac_hash<AlgorithmT: DigestAlgorithm>(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::<AlgorithmT>::new(key);
+fn hmac_hash(digest_algorithm: DigestAlgorithm, key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut hmac = Hmac::new(digest_algorithm, key);
     hmac.update(data);
     hmac.finalize()
 }
 
-pub fn hkdf_extract<AlgorithmT: DigestAlgorithm>(salt: &[u8], key_material: &[u8]) -> Vec<u8> {
-    hmac_hash::<AlgorithmT>(salt, key_material)
+pub fn hkdf_extract(digest_algorithm: DigestAlgorithm, salt: &[u8], key_material: &[u8]) -> Vec<u8> {
+    hmac_hash(digest_algorithm, salt, key_material)
 }
 
-pub fn hkdf_expand<AlgorithmT: DigestAlgorithm>(key: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+pub fn hkdf_expand(digest_algorithm: DigestAlgorithm,key: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let mut output = Vec::new();
     let mut current: Vec<u8> = vec!();
-    for i in 1..((length + length - 1) / AlgorithmT::result_size()) + 1 {
-        let mut hmac = Hmac::<AlgorithmT>::new(key);
+    for i in 1..((length + length - 1) / digest_algorithm.result_size()) + 1 {
+        let mut hmac = Hmac::new(digest_algorithm, key);
         hmac.update(&current);
         hmac.update(info);
         hmac.update(&[i.try_into().unwrap()]);
@@ -87,15 +89,14 @@ pub fn hkdf_expand<AlgorithmT: DigestAlgorithm>(key: &[u8], info: &[u8], length:
 #[cfg(test)]
 mod tests {
     use super::{Hmac, MessageAuthenticationCode};
-    use super::super::digest::sha384::Sha384;
-    use super::super::digest::sha256::Sha256;
+    use super::super::digest::DigestAlgorithm;
 
     #[test]
     fn test_hmac() {
         let key_hex = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
         let key = hex::decode(key_hex).unwrap();
         let data = b"Hi There";
-        let mut hmac = Hmac::<Sha384>::new(&key);
+        let mut hmac = Hmac::new(DigestAlgorithm::Sha384, &key);
         let expected_hex = concat!("afd03944d84895626b0825f4ab46907f",
                                    "15f9dadbe4101ec682aa034c7cebc59c",
                                    "faea9ea9076ede7f4af152e8b2fa9cb6");
@@ -111,9 +112,9 @@ mod tests {
         let salt = vec!();
         let info = vec!();
         let length = 42;
-        let prk = super::hkdf_extract::<Sha256>(&salt, &ikm);
+        let prk = super::hkdf_extract(DigestAlgorithm::Sha256, &salt, &ikm);
         assert_eq!(hex::encode(&prk), "19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04");
-        let okm = super::hkdf_expand::<Sha256>(&prk, &info, length);
+        let okm = super::hkdf_expand(DigestAlgorithm::Sha384, &prk, &info, length);
         assert_eq!(hex::encode(&okm), "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8");
     }
 
@@ -138,9 +139,9 @@ mod tests {
             "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
             "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff")).unwrap();
         let length = 82;
-        let prk = super::hkdf_extract::<Sha256>(&salt, &ikm);
+        let prk = super::hkdf_extract(DigestAlgorithm::Sha256, &salt, &ikm);
         assert_eq!(hex::encode(&prk), "06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244");
-        let okm = super::hkdf_expand::<Sha256>(&prk, &info, length);
+        let okm = super::hkdf_expand(DigestAlgorithm::Sha256, &prk, &info, length);
         assert_eq!(hex::encode(&okm), concat!(
             "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045",
             "a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c58179e",
@@ -153,9 +154,9 @@ mod tests {
         let salt = hex::decode("000102030405060708090a0b0c").unwrap();
         let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").unwrap();
         let length = 42;
-        let prk = super::hkdf_extract::<Sha256>(&salt, &ikm);
+        let prk = super::hkdf_extract(DigestAlgorithm::Sha256, &salt, &ikm);
         assert_eq!(hex::encode(&prk), "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5");
-        let okm = super::hkdf_expand::<Sha256>(&prk, &info, length);
+        let okm = super::hkdf_expand(DigestAlgorithm::Sha256, &prk, &info, length);
         assert_eq!(hex::encode(&okm), "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865");
     }
 }

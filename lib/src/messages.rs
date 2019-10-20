@@ -1,186 +1,18 @@
 use bytes::{Buf, BufMut};
 use std::io::{Write};
 use std::convert::TryInto;
-use super::BytesCursor;
+use super::client::BytesCursor;
+use super::cipher::CipherSuite;
+use super::diffie_helman::DiffieHellmanGroup;
+use super::signature::SignatureScheme;
 
 macro_rules! parse_error {
     () => {ParseError::Error(format!("Parse Error on line {}", line!()))};
 }
 
-
-
-#[derive(Debug, Clone)]
-pub enum NamedGroup {
-    /* Elliptic Curve Groups (ECDHE) */
-    Secp256r1,
-    Secp384r1,
-    Secp521r1,
-    X25519,
-    X448,
-
-    /* Finite Field Groups (DHE) */
-    Ffdhe2048,
-    Ffdhe3072,
-    Ffdhe4096,
-    Ffdhe6144,
-    Ffdhe8192,
-}
-
-impl NamedGroup {
-    fn to_u16(&self) -> u16 {
-        match self {
-            NamedGroup::Secp256r1 => 0x0017,
-            NamedGroup::Secp384r1 => 0x0018,
-            NamedGroup::Secp521r1 => 0x0019,
-            NamedGroup::X25519 => 0x001D,
-            NamedGroup::X448 => 0x001E,
-
-            NamedGroup::Ffdhe2048 => 0x100,
-            NamedGroup::Ffdhe3072 => 0x101,
-            NamedGroup::Ffdhe4096 => 0x102,
-            NamedGroup::Ffdhe6144 => 0x103,
-            NamedGroup::Ffdhe8192 => 0x104,
-        }
-    }
-
-    fn try_from_u16(num: u16) -> Result<NamedGroup, ParseError> {
-        match num {
-            0x0017 => Ok(NamedGroup::Secp256r1),
-            0x0018 => Ok(NamedGroup::Secp384r1),
-            0x0019 => Ok(NamedGroup::Secp521r1),
-            0x001D => Ok(NamedGroup::X25519),
-            0x001E => Ok(NamedGroup::X448),
-
-            0x100 => Ok(NamedGroup::Ffdhe2048),
-            0x101 => Ok(NamedGroup::Ffdhe3072),
-            0x102 => Ok(NamedGroup::Ffdhe4096),
-            0x103 => Ok(NamedGroup::Ffdhe6144),
-            0x104 => Ok(NamedGroup::Ffdhe8192),
-            _ => Err(parse_error!())
-        }
-    }
-}
-
-impl WriteToBuffer for NamedGroup {
+impl WriteToBuffer for DiffieHellmanGroup {
     fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
         buffer.put_u16_be(self.to_u16());
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum SignatureScheme {
-    /* RSASSA-PKCS1-v1_5 algorithms */
-    RsaPkcs1Sha256,
-    RsaPkcs1Sha384,
-    RsaPkcs1Sha512,
-    
-    /* RSASSA-PKCS1-v1_5 algorithms */
-    EcdsaSecp256r1Sha256,
-    EcdsaSecp256r1Sha384,
-    EcdsaSecp256r1Sha512,
-
-    /* RSASSA-PSS algorithms with public key OID rsaEncryption */
-    RsaPssRsaeSha256,
-    RsaPssRsaeSha384,
-    RsaPssRsaeSha512,
-          
-    /* EdDSA algorithms */
-    Ed25519,
-    Ed448,
-
-    /* RSASSA-PSS algorithms with public key OID RSASSA-PSS */
-    RsaPssPssSha256,
-    RsaPssPssSha384,
-    RsaPssPssSha512,
-
-    /* Legacy algorithms */
-    RsaPkcs1Sha1,
-    EcdsaSha1,
-}
-
-impl SignatureScheme {
-    fn to_u16(&self) -> u16 {
-        match self {
-            SignatureScheme::RsaPkcs1Sha256 => 0x0401,
-            SignatureScheme::RsaPkcs1Sha384 => 0x0501,
-            SignatureScheme::RsaPkcs1Sha512 => 0x0601,
-
-            SignatureScheme::EcdsaSecp256r1Sha256 => 0x0403,
-            SignatureScheme::EcdsaSecp256r1Sha384 => 0x0503,
-            SignatureScheme::EcdsaSecp256r1Sha512 => 0x0603,
-
-            SignatureScheme::RsaPssRsaeSha256 => 0x0804,
-            SignatureScheme::RsaPssRsaeSha384 => 0x0805,
-            SignatureScheme::RsaPssRsaeSha512 => 0x0806,
-
-            SignatureScheme::Ed25519 => 0x0807,
-            SignatureScheme::Ed448 => 0x0808,
-
-            SignatureScheme::RsaPssPssSha256 => 0x0809,
-            SignatureScheme::RsaPssPssSha384 => 0x080a,
-            SignatureScheme::RsaPssPssSha512 => 0x080b,
-
-            SignatureScheme::RsaPkcs1Sha1 => 0x0201,
-            SignatureScheme::EcdsaSha1 => 0x0203,
-        }
-    }
-
-    fn try_from_u16(num: u16) -> Result<SignatureScheme, ParseError> {
-        match num {
-            0x0401 => Ok(SignatureScheme::RsaPkcs1Sha256),
-            0x0501 => Ok(SignatureScheme::RsaPkcs1Sha384),
-            0x0601 => Ok(SignatureScheme::RsaPkcs1Sha512),
-
-            0x0403 => Ok(SignatureScheme::EcdsaSecp256r1Sha256),
-            0x0503 => Ok(SignatureScheme::EcdsaSecp256r1Sha384),
-            0x0603 => Ok(SignatureScheme::EcdsaSecp256r1Sha512),
-
-            0x0804 => Ok(SignatureScheme::RsaPssRsaeSha256),
-            0x0805 => Ok(SignatureScheme::RsaPssRsaeSha384),
-            0x0806 => Ok(SignatureScheme::RsaPssRsaeSha512),
-
-            0x0807 => Ok(SignatureScheme::Ed25519),
-            0x0808 => Ok(SignatureScheme::Ed448),
-
-            0x0809 => Ok(SignatureScheme::RsaPssPssSha256),
-            0x080a => Ok(SignatureScheme::RsaPssPssSha384),
-            0x080b => Ok(SignatureScheme::RsaPssPssSha512),
-
-            _ => Err(parse_error!()),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum CipherSuite {
-    TlsAes128GcmSha256,
-    TlsAes256GcmSha384,
-    TlsChacha20Poly1305Sha256,
-    TlsAes128CcmSha256,
-    TlsAes128Ccm8Sha256,
-}
-
-impl CipherSuite {
-    fn to_u16(&self) -> u16 {
-        match self {
-            CipherSuite::TlsAes128GcmSha256 => 0x1301,
-            CipherSuite::TlsAes256GcmSha384 => 0x1302,
-            CipherSuite::TlsChacha20Poly1305Sha256 => 0x1303,
-            CipherSuite::TlsAes128CcmSha256 => 0x1304,
-            CipherSuite::TlsAes128Ccm8Sha256 => 0x1305,
-        }
-    }
-
-    fn try_from_u16(num: u16) -> Result<CipherSuite, ParseError> {
-        match num {
-            0x1301 => Ok(CipherSuite::TlsAes128GcmSha256),
-            0x1302 => Ok(CipherSuite::TlsAes256GcmSha384),
-            0x1303 => Ok(CipherSuite::TlsChacha20Poly1305Sha256),
-            0x1304 => Ok(CipherSuite::TlsAes128CcmSha256),
-            0x1305 => Ok(CipherSuite::TlsAes128Ccm8Sha256),
-
-            _ => Err(parse_error!())
-        }
     }
 }
 
@@ -225,6 +57,13 @@ impl Record {
             Record::ApplicationData => unimplemented!(),
         }
     }
+
+    fn get_version(&self) -> u16 {
+        match self {
+            Record::Handshake(Handshake::ClientHello(_)) => 0x0301,
+            _ => 0x0303,
+        }
+    }
 }
 
 impl WriteToBuffer for Record {
@@ -233,7 +72,7 @@ impl WriteToBuffer for Record {
         self.write_transcript_bytes(&mut inner_buffer);
         
         buffer.put_u8(self.r#type());
-        buffer.put_u16_be(0x0303);
+        buffer.put_u16_be(self.get_version());
         buffer.put_u16_be(inner_buffer.len().try_into().unwrap());
         buffer.writer().write_all(inner_buffer.as_slice()).unwrap();
     }
@@ -260,6 +99,7 @@ impl ReadFromBuffer for Record {
                 Ok(Record::Handshake(Handshake::read_from_buffer(buffer)?))
             }
             _ => {
+                println!("Not a handshake: {:x?}", buffer);
                 Err(parse_error!())
             }
         }
@@ -509,10 +349,14 @@ pub enum ClientHelloExtension {
     ServerName(ServerName),
     SupportedGroups(SupportedGroups),
     SignatureAlgorithms(SignatureAlgorithms),
+    RecordSizeLimit(RecordSizeLimit),
     SupportedVersions(SupportedVersionsClientHello),
     Cookie(Cookie),
+    PskKeyExchangeModes(PskKeyExchangeModes),
     SignatureAlgorithmsCert(SignatureAlgorithmsCert),
     KeyShare(KeyShareClientHello),
+    RenegotiationInfo(RenegotiationInfo),
+    SessionTicket(SessionTicket),
 }
 
 impl ClientHelloExtension {
@@ -521,10 +365,14 @@ impl ClientHelloExtension {
             ClientHelloExtension::ServerName(_) => 0,
             ClientHelloExtension::SupportedGroups(_) => 10,
             ClientHelloExtension::SignatureAlgorithms(_) => 13,
+            ClientHelloExtension::RecordSizeLimit(_) => 28,
+            ClientHelloExtension::SessionTicket(_) => 35,
             ClientHelloExtension::SupportedVersions(_) => 43,
             ClientHelloExtension::Cookie(_) => 44,
+            ClientHelloExtension::PskKeyExchangeModes(_) => 45,
             ClientHelloExtension::SignatureAlgorithmsCert(_) => 50,
-            ClientHelloExtension::KeyShare(_) => 51
+            ClientHelloExtension::KeyShare(_) => 51,
+            ClientHelloExtension::RenegotiationInfo(_) => 0xff01,
         }
     }
 }
@@ -545,14 +393,26 @@ impl WriteToBuffer for ClientHelloExtension {
             ClientHelloExtension::Cookie(cookie) => {
                 cookie.write_to_buffer(&mut extension_body);
             }
+            ClientHelloExtension::PskKeyExchangeModes(psk_ke) => {
+                psk_ke.write_to_buffer(&mut extension_body);
+            }
             ClientHelloExtension::SignatureAlgorithms(algorithms) => {
                 algorithms.write_to_buffer(&mut extension_body);
             }
             ClientHelloExtension::SignatureAlgorithmsCert(algorithms) => {
                 algorithms.write_to_buffer(&mut extension_body);
             }
+            ClientHelloExtension::RecordSizeLimit(record_size_limit) => {
+                record_size_limit.write_to_buffer(&mut extension_body);
+            }
             ClientHelloExtension::KeyShare(key_share) => {
                 key_share.write_to_buffer(&mut extension_body);
+            }
+            ClientHelloExtension::RenegotiationInfo(renegotiation_info) => {
+                renegotiation_info.write_to_buffer(&mut extension_body);
+            }
+            ClientHelloExtension::SessionTicket(session_ticket) => {
+                session_ticket.write_to_buffer(&mut extension_body);
             }
         }
         buffer.put_u16_be(self.extension_type());
@@ -608,7 +468,7 @@ impl WriteToBuffer for ServerName {
 
 #[derive(Debug, Clone)]
 pub struct SupportedGroups {
-    pub groups: Vec<NamedGroup>
+    pub groups: Vec<DiffieHellmanGroup>
 }
 
 impl WriteToBuffer for SupportedGroups {
@@ -708,8 +568,32 @@ impl WriteToBuffer for KeyShareClientHello {
 }
 
 #[derive(Debug, Clone)]
+pub struct RenegotiationInfo {
+    pub renegotiated_connection: Vec<u8>,
+}
+
+impl WriteToBuffer for RenegotiationInfo {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        buffer.put_u8(self.renegotiated_connection.len().try_into().unwrap());
+        buffer.put_slice(&self.renegotiated_connection);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionTicket {
+    pub session_ticket: Vec<u8>,
+}
+
+impl WriteToBuffer for SessionTicket {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        // Session ticket is special and doesn't write its length
+        buffer.put_slice(&self.session_ticket);
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct KeyShareEntry {
-    pub group: NamedGroup,
+    pub group: DiffieHellmanGroup,
     pub key_exchange: Vec<u8>,
 }
 
@@ -721,6 +605,54 @@ impl WriteToBuffer for KeyShareEntry {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum PskKeyExchangeMode {
+    PskKe,
+    PskDheKe,
+}
+
+impl PskKeyExchangeMode {
+    fn to_u8(&self) -> u8 {
+        match self {
+            PskKeyExchangeMode::PskKe => 0x00,
+            PskKeyExchangeMode::PskDheKe => 0x01,
+        }
+    }
+
+    fn try_from_u8(num: u8) -> Result<PskKeyExchangeMode, ParseError> {
+        match num {
+            0x00 => Ok(PskKeyExchangeMode::PskKe),
+            0x01 => Ok(PskKeyExchangeMode::PskDheKe),
+            _ => Err(parse_error!()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PskKeyExchangeModes {
+    pub ke_modes: Vec<PskKeyExchangeMode>,
+}
+
+impl WriteToBuffer for PskKeyExchangeModes {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        buffer.put_u8(self.ke_modes.len().try_into().unwrap());
+        for ke_mode in &self.ke_modes {
+            buffer.put_u8(ke_mode.to_u8());
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordSizeLimit {
+    pub record_size_limit: u16,
+}
+
+impl WriteToBuffer for RecordSizeLimit {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        buffer.put_u16_be(self.record_size_limit);
+    }
+}
+
 impl ReadFromBuffer for KeyShareEntry {
     type Item = KeyShareEntry;
     fn read_from_buffer(buffer: &mut BytesCursor) -> Result<KeyShareEntry, ParseError> {
@@ -728,7 +660,7 @@ impl ReadFromBuffer for KeyShareEntry {
             return Err(parse_error!());
         }
 
-        let group = NamedGroup::try_from_u16(buffer.get_u16_be())?;
+        let group = DiffieHellmanGroup::try_from_u16(buffer.get_u16_be())?;
         let key_exchange_len: usize = buffer.get_u16_be().try_into().unwrap();
         if buffer.remaining() < key_exchange_len {
             return Err(parse_error!());
@@ -761,7 +693,7 @@ impl ReadFromBuffer for KeyShareServerHello {
 #[cfg(test)]
 mod tests {
     use num_bigint::BigInt;
-    use super::super::super::eliptic_curve::ElipticCurve;
+    use super::super::eliptic_curve::secp256r1::ElipticCurve;
     use super::CipherSuite;
     use super::ReadFromBuffer;
     use bytes::{ BytesMut};
@@ -772,7 +704,7 @@ mod tests {
 
         let curve = ElipticCurve::secp256r1();
         let ecdhe_private_key = BigInt::parse_bytes(b"1234FFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16).unwrap();
-        let ecdhe_public_key = curve.multiply(ecdhe_private_key, &curve.g);
+        let ecdhe_public_key = curve.multiply(&ecdhe_private_key, &curve.g);
         
         let message = super::Record::Handshake(
             super::Handshake::ClientHello(
@@ -813,7 +745,7 @@ mod tests {
                         super::ClientHelloExtension::SupportedGroups(
                             super::SupportedGroups {
                                 groups: vec! {
-                                    super::NamedGroup::Secp256r1
+                                    super::DiffieHellmanGroup::Secp256r1
                                 }
                             }
                         ),
@@ -821,7 +753,7 @@ mod tests {
                             super::KeyShareClientHello {
                                 client_shares: vec!(
                                     super::KeyShareEntry {
-                                        group: super::NamedGroup::Secp256r1,
+                                        group: super::DiffieHellmanGroup::Secp256r1,
                                         key_exchange: curve.point_to_bytes(&ecdhe_public_key),
                                     }
                                 )
@@ -835,7 +767,7 @@ mod tests {
 
         assert_eq!(bytes, vec!(
             0x16, // TLS Handshake Protocol
-            0x03, 0x03, // SSL Version 3.3 (for backwards compatibility)
+            0x03, 0x01, // SSL Version 3.1 (for backwards compatibility)
             0x00, 0xba, // Length
 
             /* The ClientHello Handshake Message */

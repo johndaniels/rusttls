@@ -1,5 +1,6 @@
 use num_bigint::{BigInt, Sign};
 use num_bigint::ToBigInt;
+use num_traits::identities::Zero;
 
 #[derive(PartialEq, Debug)]
 pub struct ElipticCurve {
@@ -15,6 +16,9 @@ fn correct_mod(num: &BigInt, p: &BigInt) -> BigInt {
     // Handle the non-signed mod from the bigint package
     if num.sign() == Sign::Minus {
         let neg_rem = num % p;
+        if neg_rem.is_zero() {
+            return neg_rem;
+        }
         let result = neg_rem + p;
         return result;
     } else {
@@ -72,7 +76,7 @@ impl ElipticCurve {
         }
     }
 
-    pub fn multiply(&self, value: BigInt, point: &Point) -> Point {
+    pub fn multiply(&self, value: &BigInt, point: &Point) -> Point {
         let (sign, bytes) = value.to_bytes_be();
         let mut current = Point::zero();
         for byte in bytes {
@@ -133,6 +137,7 @@ impl ElipticCurve {
             x: x,
             y: y
         };
+
         if !self.verify_on_curve(&p) {
             return None;
         }
@@ -142,6 +147,7 @@ impl ElipticCurve {
     pub fn verify_on_curve(&self, p: &Point) -> bool {
         let total_value = &p.y * &p.y - &p.x * &p.x * &p.x - &self.a * &p.x - &self.b;
         let mod_value = correct_mod(&total_value, &self.p);
+
         return mod_value == BigInt::from(0);
     }
 }
@@ -184,6 +190,18 @@ fn multiplicative_inverse(n: &BigInt, p: &BigInt) -> BigInt {
         t += p.to_bigint().unwrap();
     }
     return t;
+}
+
+pub fn secp256r1(secret: &[u8], public_key: &[u8]) -> Vec<u8> {
+    let curve = ElipticCurve::secp256r1();
+    let base = curve.try_point_from_bytes(public_key).unwrap();
+    let result_point = curve.multiply(&BigInt::from_bytes_be(Sign::Plus, secret), &base);
+    curve.point_to_bytes(&result_point)
+}
+
+pub fn secp256r1_base() -> Vec<u8> {
+    let curve = ElipticCurve::secp256r1();
+    curve.point_to_bytes(&curve.g)
 }
 
 #[cfg(test)]
@@ -239,7 +257,7 @@ mod tests {
         };
         let expected_x = BigInt::parse_bytes(b"110", 10).unwrap();
         let expected_y = BigInt::parse_bytes(b"46", 10).unwrap();
-        let new_point = curve.multiply(BigInt::from(11), &curve.g);
+        let new_point = curve.multiply(&BigInt::from(11), &curve.g);
         assert_eq!(new_point.x, expected_x);
         assert_eq!(new_point.y, expected_y);
     }
@@ -260,8 +278,52 @@ mod tests {
         };
         let expected_x = BigInt::parse_bytes(b"53957576663012291606402345341061437133522758407718089353314528343643821967563", 10).unwrap();
         let expected_y = BigInt::parse_bytes(b"98386217607324929854432842186271083758341411730506808463586570492533445740059", 10).unwrap();
-        let new_point = curve.multiply(BigInt::from(11), &curve.g);
+        let new_point = curve.multiply(&BigInt::from(11), &curve.g);
         assert_eq!(new_point.x, expected_x);
         assert_eq!(new_point.y, expected_y);
+    }
+
+    #[test]
+    fn test_vector1() {
+        let mut secret: Vec<u8> = vec![0;32];
+        secret[31] = 1;
+        let result = super::secp256r1(&secret, &super::secp256r1_base());
+        let expected_bytes = "046B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C2964FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5";
+        assert_eq!(expected_bytes, hex::encode_upper(result))
+    }
+
+    fn test_single_vector(bytes: &[u8], expected_bytes: &str) {
+        let mult = BigInt::parse_bytes(bytes, 10).unwrap();
+        let curve = ElipticCurve::secp256r1();
+        let modmult = super::correct_mod(&mult, &curve.n);
+        let new_point = curve.multiply(&modmult, &curve.g);
+        let mod_bytes = modmult.to_bytes_be().1;
+        let mut secret: Vec<u8> = vec![0;32 - mod_bytes.len()];
+        secret.extend(mod_bytes);
+        let result = super::secp256r1(&secret, &super::secp256r1_base());
+        assert_eq!(expected_bytes, hex::encode_upper(curve.point_to_bytes(&new_point)));
+        assert_eq!(expected_bytes, hex::encode_upper(result));
+    }
+
+    #[test]
+    fn test_vectors() {
+        let expected_bytes = "0483A01A9378395BAB9BCD6A0AD03CC56D56E6B19250465A94A234DC4C6B28DA9A76E49B6DE2F73234AE6A5EB9D612B75C9F2202BB6923F54FF8240AAA86F640B8";
+        test_single_vector(b"20", expected_bytes);
+        test_single_vector(b"112233445566778899", concat!(
+            "04",
+            "339150844EC15234807FE862A86BE77977DBFB3AE3D96F4C22795513AEAAB82F",
+            "B1C14DDFDC8EC1B2583F51E85A5EB3A155840F2034730E9B5ADA38B674336A21"
+        ));
+        test_single_vector(b"112233445566778899112233445566778899", concat!(
+            "04",
+            "1B7E046A076CC25E6D7FA5003F6729F665CC3241B5ADAB12B498CD32F2803264",
+            "BFEA79BE2B666B073DB69A2A241ADAB0738FE9D2DD28B5604EB8C8CF097C457B"
+        ));
+
+        test_single_vector(b"1769805277975163035253775930842367129093741786725376786007349332653323812656658291413435033257677579095366632521448854141275926144187294499863933403633025023", concat!(
+            "04",
+            "2D3854A31371FE86AFA7A7DC0B22BC2DC255D3B8D3D0AD4EF6C25DA402117103",
+            "F6D66F0A39465C49852747337CEE6219F5E0872C6A8E8431EE57410C5392F3DB"
+        ));
     }
 }
