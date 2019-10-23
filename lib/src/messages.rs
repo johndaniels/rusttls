@@ -154,7 +154,7 @@ pub trait ReadFromBuffer {
 
 #[derive(Debug, Clone)]
 pub struct ClientHello {
-    pub random: [u8; 32],
+    pub random: Vec<u8>,
     pub legacy_session_id: Vec<u8>,
     pub cipher_suites: Vec<CipherSuite>,
     pub extensions: Vec<ClientHelloExtension>,
@@ -183,7 +183,7 @@ impl WriteToBuffer for ClientHello {
 
 #[derive(Debug, Clone)]
 pub struct ServerHello {
-    pub random: [u8; 32],
+    pub random: Vec<u8>,
     pub cipher_suite: CipherSuite,
     pub extensions: Vec<ServerHelloExtension>,
 }
@@ -224,11 +224,27 @@ impl ReadFromBuffer for ServerHello {
         buffer.advance(extensions_length);
         Ok(
             ServerHello {
-                random: random,
+                random: random.to_vec(),
                 cipher_suite: cipher_suite,
                 extensions: extensions,
             }
         )
+    }
+}
+
+impl WriteToBuffer for ServerHello {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        buffer.put_u16_be(0x0303); /* TLS v1.2 */
+        buffer.put_slice(&self.random);
+        buffer.put_u8(0); // legacy session id length
+        buffer.put_u16_be(self.cipher_suite.to_u16());
+        buffer.put_u8(0); // legacy compression method value (The single 0 for 'null' required by TLS 1.3)
+        let mut extension_buffer = Vec::new();
+        for extension in &self.extensions {
+            extension.write_to_buffer(&mut extension_buffer);
+        }
+        buffer.put_u16_be(extension_buffer.len().try_into().unwrap());
+        buffer.writer().write_all(extension_buffer.as_slice()).unwrap();
     }
 }
 
@@ -303,7 +319,7 @@ impl WriteToBuffer for Handshake {
 
         match &self {
             Handshake::ClientHello(message) => message.write_to_buffer(&mut message_body),
-            Handshake::ServerHello(_) => (),
+            Handshake::ServerHello(message) => message.write_to_buffer(&mut message_body),
             Handshake::NewSessionTicket(_) => (),
             Handshake::EndOfEarlyData(_) => (),
             Handshake::EncryptedExtensions(_) => (),
@@ -427,6 +443,15 @@ pub enum ServerHelloExtension {
     KeyShare(KeyShareServerHello),
 }
 
+impl ServerHelloExtension {
+    fn extension_type(&self) -> u16 {
+        match self {
+            ServerHelloExtension::KeyShare(_) => 51,
+            ServerHelloExtension::SupportedVersions(_) => 43,
+        }
+    }
+}
+
 impl ReadFromBuffer for ServerHelloExtension {
     type Item = ServerHelloExtension;
 
@@ -449,7 +474,23 @@ impl ReadFromBuffer for ServerHelloExtension {
             _ => Err(parse_error!()),
         }
     }
+}
 
+impl WriteToBuffer for ServerHelloExtension {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        let mut extension_body: Vec<u8> = Vec::new();
+        match self {
+            ServerHelloExtension::KeyShare(key_share) => {
+                key_share.write_to_buffer(&mut extension_body);
+            },
+            ServerHelloExtension::SupportedVersions(supported_versions) => {
+                supported_versions.write_to_buffer(&mut extension_body);
+            },
+        }
+        buffer.put_u16_be(self.extension_type());
+        buffer.put_u16_be(extension_body.len().try_into().unwrap());
+        buffer.writer().write_all(extension_body.as_slice()).unwrap();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -508,6 +549,12 @@ impl ReadFromBuffer for SupportedVersionsServerHello {
             return Err(parse_error!());
         }
         return Ok(SupportedVersionsServerHello {});
+    }
+}
+
+impl WriteToBuffer for SupportedVersionsServerHello {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        buffer.put_u16_be(0x0304); // TLS 1.3
     }
 }
 
@@ -690,6 +737,12 @@ impl ReadFromBuffer for KeyShareServerHello {
     }
 }
 
+impl WriteToBuffer for KeyShareServerHello {
+    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
+        self.server_share.write_to_buffer(buffer);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use num_bigint::BigInt;
@@ -712,7 +765,7 @@ mod tests {
                     random: [
                         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
                         0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-                        0x1d, 0x1e, 0x1f, 0x20],
+                        0x1d, 0x1e, 0x1f, 0x20].to_vec(),
                     legacy_session_id: vec!(),
                     cipher_suites: vec!(CipherSuite::TlsAes128GcmSha256, CipherSuite::TlsAes256GcmSha384),
                     extensions: vec!(

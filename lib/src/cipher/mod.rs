@@ -1,4 +1,5 @@
 use super::messages::ParseError;
+use super::digest::DigestAlgorithm;
 
 #[derive(Debug, Copy, Clone)]
 pub enum CipherSuite {
@@ -29,6 +30,16 @@ impl CipherSuite {
             0x1305 => Ok(CipherSuite::TlsAes128Ccm8Sha256),
 
             _ => Err(ParseError::Error("Could not parse cipher suit from number".to_string()))
+        }
+    }
+
+    pub fn get_digest_algorithm(&self) -> DigestAlgorithm {
+        match self {
+            CipherSuite::TlsAes128GcmSha256 => DigestAlgorithm::Sha256,
+            CipherSuite::TlsAes256GcmSha384 => DigestAlgorithm::Sha384,
+            CipherSuite::TlsChacha20Poly1305Sha256 => DigestAlgorithm::Sha256,
+            CipherSuite::TlsAes128CcmSha256 => DigestAlgorithm::Sha256,
+            CipherSuite::TlsAes128Ccm8Sha256 => DigestAlgorithm::Sha256,
         }
     }
 }

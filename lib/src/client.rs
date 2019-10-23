@@ -130,11 +130,36 @@ enum TlsState {
     ServerHelloReceived
 }
 
+struct TlsSecrets {
+    master_secret: Option<Vec<u8>>,
+    client_traffic_secret: Option<Vec<u8>>,
+    server_traffic_secret: Option<Vec<u8>>,
+    
+    exporter_master_secret: Option<Vec<u8>>,
+    resumption_master_secret: Option<Vec<u8>>,
+    
+}
+
+impl TlsSecrets {
+    fn new() -> TlsSecrets {
+        TlsSecrets {
+            master_secret: None,
+            client_traffic_secret: None,
+            server_traffic_secret: None,
+            exporter_master_secret: None,
+            resumption_master_secret: None,
+        }
+    }
+}
+
 struct TlsClient {
     config: TlsClientConfig,
     framed: Pin<Box<dyn RecordStream>>,
+    /// Used before we know what our hash algorithm is
+    transcript_bytes: Vec<u8>,
+    /// Used after we know what our hash algorithm is
     transcript_hash: Option<Box<dyn Digest>>,
-    secret: Option<Vec<u8>>,
+    cipher_suite: Option<CipherSuite>,
     dh_private: Option<Vec<u8>>,
     random_gen: Box<dyn TlsGenerator>,
 }
@@ -148,21 +173,20 @@ impl TlsClient {
             config: config,
             framed: stream,
             transcript_hash: None,
-            secret: None,
             dh_private: None,
             random_gen: Box::new(RandomTlsGenerator {}),
+            cipher_suite: None,
+            transcript_bytes: vec!(),
         }
     }
 
     #[cfg(test)]
-    pub fn update_random_gen(&mut self, random_gen: Box<dyn TlsGenerator>) {
+    pub fn set_random_gen(&mut self, random_gen: Box<dyn TlsGenerator>) {
         self.random_gen = random_gen;
     }
 
     pub async fn send_client_hello(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut random_gen = thread_rng();
-        let mut random_bytes: [u8; 32] = [0;32];
-        random_gen.fill_bytes(&mut random_bytes);
+        let random_bytes = self.random_gen.generate_bytes();
         let dh = self.config.keyshare_dh_groups.as_ref().unwrap()[0];
         self.dh_private = Some(self.random_gen.generate_dh_key(&dh));
         let ecdhe_public_key = dh.generate_public(&self.dh_private.as_ref().unwrap());
@@ -235,26 +259,29 @@ impl TlsClient {
             )
         );
 
-        println!("HELLO: {:?}", client_hello);
-
+        self.transcript_bytes.extend(&client_hello.to_transcript_bytes());
         //self.transcript_hash.update(&client_hello.to_transcript_bytes());
 
         Ok(self.framed.send(client_hello).await?)
     }
 
-    pub async fn process_server_hello(&mut self) -> Result<ServerHello, Box<dyn std::error::Error>> {
+    pub async fn parse_server_hello(&mut self) -> Result<ServerHello, Box<dyn std::error::Error>> {
+
         let message = self.framed.next().await;
+        println!("HELLO!!!");
+
         match message {
             Some(Ok(record)) => {
                 println!("Success: {:x?}", record);
-                //self.transcript_hash.update(&record.to_transcript_bytes());
+                let temp_bytes = &record.to_transcript_bytes();
                 match record {
                     Record::Handshake(Handshake::ServerHello(server_hello)) => {
+                        self.transcript_bytes.extend(temp_bytes);
                         return Ok(server_hello);
                     },
                     _ => {
                         let tmp: Result<ServerHello, Box<dyn std::error::Error>> = 
-                            Err(Box::new(ParseError::Error("Unknown Error in process_server_hello".to_string())));
+                            Err(Box::new(ParseError::Error("Unknown Error in parse_server_hello".to_string())));
 
                         return tmp;
                     }
@@ -263,34 +290,57 @@ impl TlsClient {
             Some(Err(error)) => println!("Error: {:?}", error),
             None => println!("NONE!"),
         };
-        let tmp: Result<ServerHello, Box<dyn std::error::Error>> = Err(Box::new(ParseError::Error("Unknown Error in process_server_hello".to_string())));
+        let tmp: Result<ServerHello, Box<dyn std::error::Error>> = Err(Box::new(ParseError::Error("Unknown Error in parse_server_hello".to_string())));
         return tmp;
+    }
+
+    fn create_handshake_secret(&mut self, shared_key: &[u8]) {
+        println!("Shared key: {:x?}", shared_key);
+        let digest_algorithm = self.cipher_suite.as_ref().unwrap().get_digest_algorithm();
+        let salt = vec![0;digest_algorithm.result_size()];
+        let psk = vec![0;digest_algorithm.result_size()];
+        let early_secret = hkdf_extract(digest_algorithm, &salt, &psk);
+        println!("Earlt Secret: {:x?}", early_secret);
+        let mut digest = digest_algorithm.create();
+        let empty_hash = digest.finalize();
+        let derived = derive_secret(digest_algorithm, &early_secret, b"derived", &empty_hash, digest_algorithm.result_size());
+        println!("Derived Secret: {:x?}", derived);
+        let master_secret = hkdf_extract(digest_algorithm, &derived, shared_key);
+        println!("Master Secret: {:x?}", master_secret);
+        let transcript_hash = self.transcript_hash.as_ref().unwrap().finalize_copy();
+        println!("Transcript Hash: {:x?}", transcript_hash);
+        let client_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"c hs traffic", &transcript_hash, digest_algorithm.result_size());
+        println!("Client Secret: {:x?}", client_handshake_secret);
+        let server_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"s hs traffic", &transcript_hash, digest_algorithm.result_size());
+        println!("Server Secret: {:x?}", server_handshake_secret);
+
+    }
+
+    fn process_server_hello(&mut self, server_hello: ServerHello) {
+        let mut key_exchange = None;
+        for extension in server_hello.extensions {
+            match extension {
+                ServerHelloExtension::KeyShare(keyshare) => {
+                    key_exchange = Some(keyshare.server_share);
+                },
+                _ => {}
+            }
+        }
+        let key_exchange = key_exchange.unwrap();
+        let shared_key = key_exchange.group.compute(&self.dh_private.as_ref().unwrap(), &key_exchange.key_exchange);
+        self.cipher_suite = Some(server_hello.cipher_suite);
+        self.transcript_hash = Some(self.cipher_suite.unwrap().get_digest_algorithm().create());
+        self.transcript_hash.as_mut().unwrap().update(&self.transcript_bytes);
+        self.transcript_bytes.clear();
+        self.create_handshake_secret(&shared_key);
     }
 
     async fn run(&mut self) {
         //self.secret = hkdf_extract(self.digest_algorithm, &self.secret, &vec![0;self.digest_algorithm.result_size()]); // Early Secret
 
         self.send_client_hello().await.unwrap();
-        let server_hello = self.process_server_hello().await.unwrap();
-
-        //let handshake_salt = derive_secret(self.digest_algorithm, &self.secret, b"derived", b"", self.digest_algorithm.result_size());
-        let mut keyshare: Option<KeyShareServerHello> = None;
-        for extension in server_hello.extensions {
-            match extension {
-                ServerHelloExtension::KeyShare(ks) => {
-                    keyshare = Some(ks);
-                },
-                _ => {
-                    return;
-                }
-            }
-        }
-        // let curve = ElipticCurve::secp256r1();
-        // let server_public_point = curve.try_point_from_bytes(&keyshare.unwrap().server_share.key_exchange).unwrap();
-        // let ecdhe_private_key = BigInt::from_bytes_be(Sign::Plus, &tls_client.dh_private);
-        // let shared_point = curve.multiply(&ecdhe_private_key, &server_public_point);
-        // tls_client.secret = hkdf_extract::<Sha384>(&tls_client.secret.clone(), &shared_point.x.to_bytes_be().1);
-
+        let server_hello = self.parse_server_hello().await.unwrap();
+        self.process_server_hello(server_hello);
     }
 }
 
@@ -342,19 +392,21 @@ pub fn connect() -> Result<(), tokio::io::Error> {
 mod tests {
     use tokio::prelude::*;
     use std::pin::Pin;
-    use core::task::{Context, Poll};
+    use core::task::{Context, Poll, Waker};
     use std::collections::VecDeque;
-    use super::super::messages::*;
+    use super::*;
     use super::super::cipher::CipherSuite;
-    use super::super::eliptic_curve::secp256r1::ElipticCurve;
     use super::super::signature::SignatureScheme;
     use super::DiffieHellmanGroup;
-    use num_bigint::{Sign, BigInt};
-    
+    use futures::task::{LocalSpawnExt};
+    use std::rc::Rc;
+    use std::cell::RefCell;
 
+    #[derive(Clone)]
     struct RecordStreamMock {
-        outbound_messages: VecDeque<Record>,
-        inbound_messages: VecDeque<Record>
+        outbound_messages: Rc<RefCell<VecDeque<Record>>>,
+        inbound_messages: Rc<RefCell<VecDeque<Record>>>,
+        waker: Rc<RefCell<Option<Waker>>>,
     }
 
     impl Sink<Record> for RecordStreamMock {
@@ -363,7 +415,7 @@ mod tests {
             Poll::Ready(Ok(()))
         }
         fn start_send(self: Pin<&mut Self>, item: Record) -> Result<(), Self::Error> {
-            self.get_mut().outbound_messages.push_back(item);
+            self.get_mut().outbound_messages.borrow_mut().push_back(item);
             Ok(())
         }
 
@@ -382,10 +434,16 @@ mod tests {
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
         ) -> Poll<Option<Self::Item>> {
-            let front = self.get_mut().inbound_messages.pop_front();
+            println!("POLL NEXT");
+            let me = self.get_mut();
+            let front = me.inbound_messages.borrow_mut().pop_front();
             match front {
                 Some(item) => Poll::Ready(Some(Ok(item))),
-                None => Poll::Pending,
+                None => {
+                    let mut test = me.waker.borrow_mut();
+                    *test = Some(cx.waker().clone());
+                    return Poll::Pending;
+                },
             }
         }
     }
@@ -420,106 +478,183 @@ mod tests {
 
     #[test]
     fn test_initial_connection() {
-        let message = Record::Handshake(
-            Handshake::ClientHello(
-                ClientHello {
-                    random: [
-                        0xcb, 0x34, 0xec, 0xb1, 0xe7, 0x81, 0x63, 0xba, // Random bytes
-                        0x1c, 0x38, 0xc6, 0xda, 0xcb, 0x19, 0x6a, 0x6d, // Random bytes
-                        0xff, 0xa2, 0x1a, 0x8d, 0x99, 0x12, 0xec, 0x18, // Random bytes
-                        0xa2, 0xef, 0x62, 0x83, 0x02, 0x4d, 0xec, 0xe7, // Random bytes
-                    ],
-                    legacy_session_id: vec!(),
-                    cipher_suites: vec!(
-                        CipherSuite::TlsAes128GcmSha256,
-                        CipherSuite::TlsChacha20Poly1305Sha256,
-                        CipherSuite::TlsAes256GcmSha384
-                    ),
-                    extensions: vec!(
-                        ClientHelloExtension::ServerName(
-                            ServerName {
-                                hostname: b"server".to_vec()
-                            }
-                        ),
-                        ClientHelloExtension::RenegotiationInfo(
-                            RenegotiationInfo {
-                                renegotiated_connection: vec!(),
-                            }
-                        ),
-                        ClientHelloExtension::SupportedGroups(
-                            SupportedGroups {
-                                groups: vec! {
-                                    DiffieHellmanGroup::X25519,
-                                    DiffieHellmanGroup::Secp256r1,
-                                    DiffieHellmanGroup::Secp384r1,
-                                    DiffieHellmanGroup::Secp521r1,
-                                    DiffieHellmanGroup::Ffdhe2048,
-                                    DiffieHellmanGroup::Ffdhe3072,
-                                    DiffieHellmanGroup::Ffdhe4096,
-                                    DiffieHellmanGroup::Ffdhe6144,
-                                    DiffieHellmanGroup::Ffdhe8192,
-                                }
-                            }
-                        ),
-                        ClientHelloExtension::SessionTicket(
-                            SessionTicket {
-                                session_ticket: vec!(),
-                            }
-                        ),
-                        ClientHelloExtension::KeyShare(
-                            KeyShareClientHello {
-                                client_shares: vec!(
-                                    KeyShareEntry {
-                                        group: DiffieHellmanGroup::X25519,
-                                        key_exchange: vec!(
-                                            0x99, 0x38, 0x1d, 0xe5, 0x60, 0xe4, 0xbd, 0x43, // Key Share
-                                            0xd2, 0x3d, 0x8e, 0x43, 0x5a, 0x7d, 0xba, 0xfe, // Key Share
-                                            0xb3, 0xc0, 0x6e, 0x51, 0xc1, 0x3c, 0xae, 0x4d, // Key Share
-                                            0x54, 0x13, 0x69, 0x1e, 0x52, 0x9a, 0xaf, 0x2c, // Key Share
-                                        ),
-                                    }
+
+        let random_gen = Box::new(MockTlsGenerator {});
+        let config = TlsClientConfig {
+            cipher_suites: vec!(
+                CipherSuite::TlsAes128GcmSha256,
+                CipherSuite::TlsChacha20Poly1305Sha256,
+                CipherSuite::TlsAes256GcmSha384
+            ),
+            dh_groups: vec!(
+                DiffieHellmanGroup::X25519,
+                DiffieHellmanGroup::Secp256r1,
+                DiffieHellmanGroup::Secp384r1,
+                DiffieHellmanGroup::Secp521r1,
+                DiffieHellmanGroup::Ffdhe2048,
+                DiffieHellmanGroup::Ffdhe3072,
+                DiffieHellmanGroup::Ffdhe4096,
+                DiffieHellmanGroup::Ffdhe6144,
+                DiffieHellmanGroup::Ffdhe8192,
+            ),
+            keyshare_dh_groups: Some(vec!(
+                DiffieHellmanGroup::X25519,
+            )),
+            signature_algorithms: vec!(
+                SignatureScheme::EcdsaSecp256r1Sha256,
+                SignatureScheme::EcdsaSecp384r1Sha384,
+                SignatureScheme::EcdsaSecp512r1Sha512,
+                SignatureScheme::EcdsaSha1,
+                SignatureScheme::RsaPssRsaeSha256,
+                SignatureScheme::RsaPssRsaeSha384,
+                SignatureScheme::RsaPssRsaeSha512,
+                SignatureScheme::RsaPkcs1Sha256,
+                SignatureScheme::RsaPkcs1Sha384,
+                SignatureScheme::RsaPkcs1Sha512,
+                SignatureScheme::RsaPkcs1Sha1,
+                SignatureScheme::DsaSha256Reserved,
+                SignatureScheme::DsaSha384Reserved,
+                SignatureScheme::DsaSha512Reserved,
+                SignatureScheme::DsaSha1Reserved,
+            ),
+            signature_algorithms_cert: None,
+            cookie: None,
+            psk_key_exchange_modes: Some(vec!(PskKeyExchangeMode::PskDheKe)),
+            record_size_limit: Some(0x4001),
+            send_renegotiation_info: true,
+            server_name: Some(b"server".to_vec()),
+            session_ticket: Some(vec!()),
+        };
+
+        let internal_mock = RecordStreamMock {
+            inbound_messages: Rc::new(RefCell::new(VecDeque::new())),
+            outbound_messages: Rc::new(RefCell::new(VecDeque::new())),
+            waker: Rc::new(RefCell::new(None)),
+        };
+
+        let stream_mock = Box::pin(internal_mock.clone());
+
+        let client = Rc::new(RefCell::new(TlsClient::new(config, stream_mock.clone())));
+        let tls_client = client.clone();
+        let future = async move {
+            tls_client.borrow_mut().set_random_gen(Box::new(MockTlsGenerator {}));
+            tls_client.borrow_mut().run().await;
+        };
+        //futures::pin_mut!(future);
+        //futures::executor::block_on(future);
+        let mut pool = futures::executor::LocalPool::new();
+        let mut spawner = pool.spawner();
+        spawner.spawn_local(future).unwrap();
+        pool.try_run_one();
+
+        let server_message = Record::Handshake(Handshake::ServerHello(
+            ServerHello {
+                cipher_suite: CipherSuite::TlsAes128GcmSha256,
+                random: vec!(
+                    0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
+                    0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
+                    0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
+                    0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
+                ),
+                extensions: vec!(
+                    ServerHelloExtension::KeyShare(
+                        KeyShareServerHello{
+                            server_share: KeyShareEntry {
+                                group: DiffieHellmanGroup::X25519,
+                                key_exchange: vec!(
+                                    0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
+                                    0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
+                                    0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
+                                    0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
                                 )
                             }
-                        ),
-                        ClientHelloExtension::SupportedVersions(
-                            SupportedVersionsClientHello {}
-                        ),
-                        ClientHelloExtension::SignatureAlgorithms(
-                            SignatureAlgorithms {
-                                supported_signature_algorithms: vec! {
-                                    SignatureScheme::EcdsaSecp256r1Sha256,
-                                    SignatureScheme::EcdsaSecp384r1Sha384,
-                                    SignatureScheme::EcdsaSecp512r1Sha512,
-                                    SignatureScheme::EcdsaSha1,
-                                    SignatureScheme::RsaPssRsaeSha256,
-                                    SignatureScheme::RsaPssRsaeSha384,
-                                    SignatureScheme::RsaPssRsaeSha512,
-                                    SignatureScheme::RsaPkcs1Sha256,
-                                    SignatureScheme::RsaPkcs1Sha384,
-                                    SignatureScheme::RsaPkcs1Sha512,
-                                    SignatureScheme::RsaPkcs1Sha1,
-                                    SignatureScheme::DsaSha256Reserved,
-                                    SignatureScheme::DsaSha384Reserved,
-                                    SignatureScheme::DsaSha512Reserved,
-                                    SignatureScheme::DsaSha1Reserved,
-                                }
-                            }
-                        ),
-                        ClientHelloExtension::PskKeyExchangeModes(
-                            PskKeyExchangeModes {
-                                ke_modes: vec!(PskKeyExchangeMode::PskDheKe),
-                            }
-                        ),
-                        ClientHelloExtension::RecordSizeLimit(
-                            RecordSizeLimit {
-                                record_size_limit: 0x4001,
-                            }
-                        )
+                        }
+                    ),
+                    ServerHelloExtension::SupportedVersions(
+                        SupportedVersionsServerHello {}
                     )
-                }
-            )
+                )
+            }
+        ));
+
+        let server_bytes: Vec<u8> = vec!(
+            0x16, // Handshake Protocol
+            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
+            0x00, 0x5a, // mdessage length
+            0x02,  // Server Hello
+            0x00, 0x00, 0x56, // Handshake Length
+            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
+            0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
+            0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
+            0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
+            0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
+            0x00, // Legacy Session ID Echo Length
+            // Empty Legacy Session ID Echo
+
+            0x13, 0x01, // Cipher (AES_128_GCM_SHA256)
+
+
+            0x00, // Legacy Compression Method
+            0x00, 0x2e, // Extensions Length
+            0x00, 0x33, // Key Share
+            0x00, 0x24, // Extension Length 
+            0x00, 0x1d, // Chosen Group: x25519
+            0x00, 0x20, // Key Exchange Length
+            0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
+            0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
+            0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
+            0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
+            0x00, 0x2b, // Supported Versions
+            0x00, 0x02, // Extension Length
+            0x03, 0x04, // TLS 1.3 (SSL 3.4)
         );
-        let bytes = message.to_bytes();
+
+        assert_eq!(server_bytes, server_message.to_bytes());
+        stream_mock.inbound_messages.borrow_mut().push_back(server_message);
+        stream_mock.waker.borrow_mut().as_ref().unwrap().wake_by_ref();
+
+        let test = client.as_ptr();
+        unsafe {
+        }
+
+        let client_message = internal_mock.outbound_messages.borrow_mut().pop_front();
+        println!("Client Message: {:?}", client_message);
+        pool.run_until_stalled();
+        
+
+        let server_bytes: Vec<u8> = vec!(
+            0x16, // Handshake Protocol
+            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
+            0x00, 0x5a, // mdessage length
+            0x02,  // Server Hello
+            0x00, 0x00, 0x56, // Handshake Length
+            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
+            0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
+            0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
+            0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
+            0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
+            0x00, // Legacy Session ID Echo Length
+            // Empty Legacy Session ID Echo
+
+            0x13, 0x01, // Cipger (AES_128_GCM_SHA256)
+
+
+            0x00, // Legacy Compression Method
+            0x00, 0x2e, // Extensions Length
+            0x00, 0x33, // Key Share
+            0x00, 0x24, // Extension Length 
+            0x00, 0x1d, // Chosen Group: x25519
+            0x00, 0x20, // Key Exchange Length
+            0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
+            0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
+            0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
+            0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
+            0x00, 0x2b, // Supported Versions
+            0x00, 0x02, // Extension Length
+            0x03, 0x04, // TLS 1.3 (SSL 3.4)
+        );
+
+        let bytes = client_message.unwrap().to_bytes();
 
         assert_eq!(bytes, vec!(
             0x16, // TLS Handshake Protocol
@@ -549,19 +684,19 @@ mod tests {
             0x00, 0x91, // Length of Extensions
 
             0x00, 0x00, // Server Name Indication
-            0x00, 0x0b, // Plugin Length
+            0x00, 0x0b, // Extension Length
             0x00, 0x09, // Server Name List Length
             0x00, // name_type (host_name)
             0x00, 0x06, // HostName length
             0x73, 0x65, 0x72, 0x76, 0x65, 0x72, // "server"
 
             0xff, 0x01, // Renegotiated Connection
-            0x00, 0x01, // Plugin Length
+            0x00, 0x01, // Extension Length
             0x00,       // Renegotiated Connection Length
                         // Renegotiated Connection Data (empty)
 
             0x00, 0x0a, // Supported Groups
-            0x00, 0x14, // Plugin Length
+            0x00, 0x14, // Extension Length
             0x00, 0x12, // Supported Groups Length
             0x00, 0x1d, // x25519
             0x00, 0x17, // secp256r1
@@ -577,7 +712,7 @@ mod tests {
             0x00, 0x00, // Session Ticket Length
 
             0x00, 0x33, // Key Share
-            0x00, 0x26, // Plugin Length
+            0x00, 0x26, // Extension Length
             0x00, 0x24, // Key Share Length
             0x00, 0x1d, // x25519
             0x00, 0x20, // Key share data length
@@ -593,7 +728,7 @@ mod tests {
             0x03, 0x04, // TLS 1.3 (SSL 3.4)
 
             0x00, 0x0d, //signature algorithms
-            0x00, 0x20, // Plugin Length
+            0x00, 0x20, // Extension Length
             0x00, 0x1e, // Signature Algorithms length
             0x04, 0x03, // ecdsa_secp256r1_sha256
             0x05, 0x03, // ecdsa_secp384r1_sha384
@@ -612,12 +747,12 @@ mod tests {
             0x02, 0x02, // dsa_sha1_RESERVED
 
             0x00, 0x2d, // PSK Key Exchange Modes
-            0x00, 0x02, // Plugin Length
+            0x00, 0x02, // Extension Length
             0x01, // PSK Key Exchange Modes Length
             0x01, // psk_dhe_ke
 
             0x00, 0x1c, // Record Size Limit
-            0x00, 0x02, // Plugin Length
+            0x00, 0x02, // Extension Length
             0x40, 0x01, // 16385
         ));
     }
