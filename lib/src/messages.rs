@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut};
 use std::io::{Write};
 use std::convert::TryInto;
 use super::client::BytesCursor;
-use super::cipher::CipherSuite;
+use super::cipher_suite::CipherSuite;
 use super::diffie_helman::DiffieHellmanGroup;
 use super::signature::SignatureScheme;
 

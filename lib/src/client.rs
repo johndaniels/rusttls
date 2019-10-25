@@ -6,7 +6,7 @@ use rand::prelude::*;
 use std::net::{SocketAddr};
 use super::messages::*;
 use super::signature::SignatureScheme;
-use super::cipher::CipherSuite;
+use super::cipher_suite::CipherSuite;
 use num_bigint::{Sign, BigInt};
 use bytes::{Buf, BufMut, BytesMut};
 use std::convert::TryInto;
@@ -395,7 +395,6 @@ mod tests {
     use core::task::{Context, Poll, Waker};
     use std::collections::VecDeque;
     use super::*;
-    use super::super::cipher::CipherSuite;
     use super::super::signature::SignatureScheme;
     use super::DiffieHellmanGroup;
     use futures::task::{LocalSpawnExt};
