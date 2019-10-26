@@ -75,7 +75,7 @@ pub fn hkdf_extract(digest_algorithm: DigestAlgorithm, salt: &[u8], key_material
 pub fn hkdf_expand(digest_algorithm: DigestAlgorithm,key: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let mut output = Vec::new();
     let mut current: Vec<u8> = vec!();
-    for i in 1..((length + length - 1) / digest_algorithm.result_size()) + 1 {
+    for i in 1..((length + digest_algorithm.result_size() - 1) / digest_algorithm.result_size()) + 1 {
         let mut hmac = Hmac::new(digest_algorithm, key);
         hmac.update(&current);
         hmac.update(info);

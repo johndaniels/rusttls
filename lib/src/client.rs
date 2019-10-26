@@ -6,7 +6,7 @@ use rand::prelude::*;
 use std::net::{SocketAddr};
 use super::messages::*;
 use super::signature::SignatureScheme;
-use super::cipher_suite::CipherSuite;
+use super::cipher_suite::{CipherSuite};
 use num_bigint::{Sign, BigInt};
 use bytes::{Buf, BufMut, BytesMut};
 use std::convert::TryInto;
@@ -130,10 +130,18 @@ enum TlsState {
     ServerHelloReceived
 }
 
+#[derive(Debug, Clone)]
 struct TlsSecrets {
     master_secret: Option<Vec<u8>>,
     client_traffic_secret: Option<Vec<u8>>,
     server_traffic_secret: Option<Vec<u8>>,
+    client_write_iv: Option<Vec<u8>>,
+    server_write_iv: Option<Vec<u8>>,
+    client_write_key: Option<Vec<u8>>,
+    server_write_key: Option<Vec<u8>>,
+    client_sequence_number: Option<u64>,
+    server_sequence_number: Option<u64>,
+
     
     exporter_master_secret: Option<Vec<u8>>,
     resumption_master_secret: Option<Vec<u8>>,
@@ -148,6 +156,12 @@ impl TlsSecrets {
             server_traffic_secret: None,
             exporter_master_secret: None,
             resumption_master_secret: None,
+            client_write_iv: None,
+            server_write_iv: None,
+            client_write_key: None,
+            server_write_key: None,
+            client_sequence_number: None,
+            server_sequence_number: None,
         }
     }
 }
@@ -162,6 +176,7 @@ struct TlsClient {
     cipher_suite: Option<CipherSuite>,
     dh_private: Option<Vec<u8>>,
     random_gen: Box<dyn TlsGenerator>,
+    secrets: Option<TlsSecrets>
 }
 
 impl TlsClient {
@@ -177,6 +192,7 @@ impl TlsClient {
             random_gen: Box::new(RandomTlsGenerator {}),
             cipher_suite: None,
             transcript_bytes: vec!(),
+            secrets: None,
         }
     }
 
@@ -300,7 +316,7 @@ impl TlsClient {
         let salt = vec![0;digest_algorithm.result_size()];
         let psk = vec![0;digest_algorithm.result_size()];
         let early_secret = hkdf_extract(digest_algorithm, &salt, &psk);
-        println!("Earlt Secret: {:x?}", early_secret);
+        println!("Early Secret: {:x?}", early_secret);
         let mut digest = digest_algorithm.create();
         let empty_hash = digest.finalize();
         let derived = derive_secret(digest_algorithm, &early_secret, b"derived", &empty_hash, digest_algorithm.result_size());
@@ -313,7 +329,29 @@ impl TlsClient {
         println!("Client Secret: {:x?}", client_handshake_secret);
         let server_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"s hs traffic", &transcript_hash, digest_algorithm.result_size());
         println!("Server Secret: {:x?}", server_handshake_secret);
-
+        let cipher_suite = self.cipher_suite.as_ref().unwrap();
+        let client_write_key = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"key", b"", cipher_suite.key_len());
+        println!("Client Write Key: {:x?}", client_write_key);
+        let client_write_iv = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"iv", b"", cipher_suite.iv_len());
+        println!("Client Write IV: {:x?}", client_write_iv);
+        let server_write_key = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"key", b"", cipher_suite.key_len());
+        println!("Server Write Key: {:x?}", server_write_key);
+        let server_write_iv = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"iv", b"", cipher_suite.iv_len());
+        println!("Server Write Iv: {:x?}", server_write_iv);
+        let secrets = TlsSecrets {
+            master_secret: Some(master_secret),
+            client_traffic_secret: Some(client_handshake_secret),
+            server_traffic_secret: Some(server_handshake_secret),
+            exporter_master_secret: None,
+            resumption_master_secret: None,
+            client_write_key: Some(client_write_key),
+            client_write_iv: Some(client_write_iv),
+            server_write_key: Some(server_write_key),
+            server_write_iv: Some(server_write_iv),
+            client_sequence_number: Some(0),
+            server_sequence_number: Some(0),
+        };
+        self.secrets = Some(secrets);
     }
 
     fn process_server_hello(&mut self, server_hello: ServerHello) {
@@ -576,7 +614,28 @@ mod tests {
             }
         ));
 
-        let server_bytes: Vec<u8> = vec!(
+        let server_bytes: Vec<u8> = server_hello_bytes();
+
+        assert_eq!(server_bytes, server_message.to_bytes());
+        stream_mock.inbound_messages.borrow_mut().push_back(server_message);
+        stream_mock.waker.borrow_mut().as_ref().unwrap().wake_by_ref();
+
+        let client_message = internal_mock.outbound_messages.borrow_mut().pop_front();
+        println!("Client Message: {:?}", client_message);
+        pool.run_until_stalled();
+
+        let test = client.as_ptr();
+        unsafe {
+            println!("secrets: {:x?}", (*test).secrets);
+        }
+
+        let bytes = client_message.unwrap().to_bytes();
+
+        assert_eq!(bytes, client_hello_bytes());
+    }
+
+    fn server_hello_bytes() -> Vec<u8> {
+        vec!(
             0x16, // Handshake Protocol
             0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
             0x00, 0x5a, // mdessage length
@@ -606,56 +665,11 @@ mod tests {
             0x00, 0x2b, // Supported Versions
             0x00, 0x02, // Extension Length
             0x03, 0x04, // TLS 1.3 (SSL 3.4)
-        );
+        )
+    }
 
-        assert_eq!(server_bytes, server_message.to_bytes());
-        stream_mock.inbound_messages.borrow_mut().push_back(server_message);
-        stream_mock.waker.borrow_mut().as_ref().unwrap().wake_by_ref();
-
-        let test = client.as_ptr();
-        unsafe {
-        }
-
-        let client_message = internal_mock.outbound_messages.borrow_mut().pop_front();
-        println!("Client Message: {:?}", client_message);
-        pool.run_until_stalled();
-        
-
-        let server_bytes: Vec<u8> = vec!(
-            0x16, // Handshake Protocol
-            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
-            0x00, 0x5a, // mdessage length
-            0x02,  // Server Hello
-            0x00, 0x00, 0x56, // Handshake Length
-            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
-            0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
-            0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
-            0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
-            0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
-            0x00, // Legacy Session ID Echo Length
-            // Empty Legacy Session ID Echo
-
-            0x13, 0x01, // Cipger (AES_128_GCM_SHA256)
-
-
-            0x00, // Legacy Compression Method
-            0x00, 0x2e, // Extensions Length
-            0x00, 0x33, // Key Share
-            0x00, 0x24, // Extension Length 
-            0x00, 0x1d, // Chosen Group: x25519
-            0x00, 0x20, // Key Exchange Length
-            0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
-            0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
-            0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
-            0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
-            0x00, 0x2b, // Supported Versions
-            0x00, 0x02, // Extension Length
-            0x03, 0x04, // TLS 1.3 (SSL 3.4)
-        );
-
-        let bytes = client_message.unwrap().to_bytes();
-
-        assert_eq!(bytes, vec!(
+    fn client_hello_bytes() -> Vec<u8> {
+        vec!(
             0x16, // TLS Handshake Protocol
             0x03, 0x01, // SSL Version 3.1 (for backwards compatibility)
             0x00, 0xc4, // Length
@@ -753,6 +767,35 @@ mod tests {
             0x00, 0x1c, // Record Size Limit
             0x00, 0x02, // Extension Length
             0x40, 0x01, // 16385
-        ));
+        )
+    }
+
+    fn server_encrypted_extensions()  {
+
+    }
+
+    fn server_encrypted_extensions_bytes() -> Vec<u8> {
+        vec!(
+            0x08, // Encrypted Extensions
+            0x00, 0x00, 0x24, // Length
+            0x00, 0x22, // Length
+            0x00, 0x0a, // Supported Groups
+            0x00, 0x14, // Extension Length
+            0x00, 0x12, // Named Group List
+            0x00, 0x1d, // X25519
+            0x00, 0x17, //Secp256r1
+            0x00, 0x18, //Secp384r1
+            0x00, 0x19,  //Secp521r1
+            0x01, 0x00, //Ffdhe2048 
+            0x01, 0x01, //Ffdhe3072
+            0x01, 0x02, //Ffdhe4096
+            0x01, 0x03, //Ffdhe6144
+            0x01, 0x04, //Ffdhe8192
+            0x00, 0x1c, // Record Size Limit
+            0x00, 0x02, // Plugin Length
+            0x40, 0x01, // Record Size 0x4001.
+            0x00, 0x00, // Server Name
+            0x00, 0x00, // Server Name Plugin Length
+        )
     }
 }

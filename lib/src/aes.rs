@@ -52,9 +52,11 @@ static RCON: [u8;11] = [
     0x36,
 ];
 
-struct Aes {
+#[derive(Clone)]
+pub struct Aes {
     key_schedule: Vec<u8>,
     rounds: usize,
+    pub block_size: usize,
 }
 
 impl Aes {
@@ -63,6 +65,7 @@ impl Aes {
         Aes {
             key_schedule: expand_key(key, 4 * (10 +1), 4),
             rounds: 10,
+            block_size: 16,
         }
     }
 
@@ -71,6 +74,7 @@ impl Aes {
         Aes {
             key_schedule: expand_key(key, 4 * (12 +1), 6),
             rounds: 12,
+            block_size: 24,
         }
     }
 
@@ -79,6 +83,7 @@ impl Aes {
         Aes {
             key_schedule: expand_key(key, 4 * (14 +1), 8),
             rounds: 14,
+            block_size: 32,
         }
     }
 

@@ -260,6 +260,7 @@ pub struct EndOfEarlyData {
 
 #[derive(Debug, Clone)]
 pub struct EncryptedExtensions {
+    pub extensions: Vec<ServerHelloExtension>,
 
 }
 
