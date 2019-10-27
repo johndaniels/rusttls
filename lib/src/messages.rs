@@ -157,7 +157,7 @@ pub struct ClientHello {
     pub random: Vec<u8>,
     pub legacy_session_id: Vec<u8>,
     pub cipher_suites: Vec<CipherSuite>,
-    pub extensions: Vec<ClientHelloExtension>,
+    pub extensions: Vec<Extension>,
 }
 
 impl WriteToBuffer for ClientHello {
@@ -185,7 +185,7 @@ impl WriteToBuffer for ClientHello {
 pub struct ServerHello {
     pub random: Vec<u8>,
     pub cipher_suite: CipherSuite,
-    pub extensions: Vec<ServerHelloExtension>,
+    pub extensions: Vec<Extension>,
 }
 
 impl ReadFromBuffer for ServerHello {
@@ -216,9 +216,9 @@ impl ReadFromBuffer for ServerHello {
             return Err(parse_error!());
         }
         let mut extensions_bytes = buffer.slice(0, extensions_length);
-        let mut extensions: Vec<ServerHelloExtension> = vec!();
+        let mut extensions: Vec<Extension> = vec!();
         while extensions_bytes.has_remaining() {
-            extensions.push(ServerHelloExtension::read_from_buffer(&mut extensions_bytes)?)
+            extensions.push(Extension::read_from_buffer(ReadContext::ServerHello, &mut extensions_bytes)?)
         }
 
         buffer.advance(extensions_length);
@@ -260,7 +260,7 @@ pub struct EndOfEarlyData {
 
 #[derive(Debug, Clone)]
 pub struct EncryptedExtensions {
-    pub extensions: Vec<ServerHelloExtension>,
+    pub extensions: Vec<Extension>,
 
 }
 
@@ -361,74 +361,101 @@ impl ReadFromBuffer for Handshake {
     }
 }
 
+pub enum ReadContext {
+    ServerHello,
+    ClientHello,
+    EncryptedExtensions,
+}
+
 #[derive(Debug, Clone)]
-pub enum ClientHelloExtension {
+pub enum Extension {
     ServerName(ServerName),
     SupportedGroups(SupportedGroups),
     SignatureAlgorithms(SignatureAlgorithms),
     RecordSizeLimit(RecordSizeLimit),
-    SupportedVersions(SupportedVersionsClientHello),
+    SupportedVersions(SupportedVersions),
     Cookie(Cookie),
     PskKeyExchangeModes(PskKeyExchangeModes),
     SignatureAlgorithmsCert(SignatureAlgorithmsCert),
-    KeyShare(KeyShareClientHello),
+    KeyShare(KeyShare),
     RenegotiationInfo(RenegotiationInfo),
     SessionTicket(SessionTicket),
 }
 
-impl ClientHelloExtension {
+impl Extension {
     fn extension_type(&self) -> u16 {
         match self {
-            ClientHelloExtension::ServerName(_) => 0,
-            ClientHelloExtension::SupportedGroups(_) => 10,
-            ClientHelloExtension::SignatureAlgorithms(_) => 13,
-            ClientHelloExtension::RecordSizeLimit(_) => 28,
-            ClientHelloExtension::SessionTicket(_) => 35,
-            ClientHelloExtension::SupportedVersions(_) => 43,
-            ClientHelloExtension::Cookie(_) => 44,
-            ClientHelloExtension::PskKeyExchangeModes(_) => 45,
-            ClientHelloExtension::SignatureAlgorithmsCert(_) => 50,
-            ClientHelloExtension::KeyShare(_) => 51,
-            ClientHelloExtension::RenegotiationInfo(_) => 0xff01,
+            Extension::ServerName(_) => 0,
+            Extension::SupportedGroups(_) => 10,
+            Extension::SignatureAlgorithms(_) => 13,
+            Extension::RecordSizeLimit(_) => 28,
+            Extension::SessionTicket(_) => 35,
+            Extension::SupportedVersions(_) => 43,
+            Extension::Cookie(_) => 44,
+            Extension::PskKeyExchangeModes(_) => 45,
+            Extension::SignatureAlgorithmsCert(_) => 50,
+            Extension::KeyShare(_) => 51,
+            Extension::RenegotiationInfo(_) => 0xff01,
         }
     }
+
+    fn read_from_buffer(context: ReadContext, buffer: &mut BytesCursor) -> Result<Extension, ParseError> {
+        if buffer.remaining() < 4 {
+            return Err(parse_error!());
+        }
+        let extension_type = buffer.get_u16_be();
+        let length = buffer.get_u16_be();
+
+        match extension_type {
+            43 => {
+                let supported_versions = SupportedVersions::read_from_buffer(context, buffer)?;
+                return Ok(Extension::SupportedVersions(supported_versions));
+            },
+            51 => {
+                let key_share = KeyShare::read_from_buffer(context, buffer)?;
+                return Ok(Extension::KeyShare(key_share));
+            }
+            _ => Err(parse_error!()),
+        }
+    }
+
 }
 
-impl WriteToBuffer for ClientHelloExtension {
+impl WriteToBuffer for Extension {
     fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
         let mut extension_body: Vec<u8> = Vec::new();
         match self {
-            ClientHelloExtension::ServerName(server_name) => {
+            Extension::ServerName(server_name) => {
                 server_name.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::SupportedGroups(supported_groups) => {
+            Extension::SupportedGroups(supported_groups) => {
                 supported_groups.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::SupportedVersions(message) => {
+            Extension::SupportedVersions(message) => {
                 message.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::Cookie(cookie) => {
+            Extension::Cookie(cookie) => {
                 cookie.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::PskKeyExchangeModes(psk_ke) => {
+            Extension::PskKeyExchangeModes(psk_ke) => {
                 psk_ke.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::SignatureAlgorithms(algorithms) => {
+            Extension::SignatureAlgorithms(algorithms) => {
                 algorithms.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::SignatureAlgorithmsCert(algorithms) => {
+            Extension::SignatureAlgorithmsCert(algorithms) => {
                 algorithms.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::RecordSizeLimit(record_size_limit) => {
+            Extension::RecordSizeLimit(record_size_limit) => {
                 record_size_limit.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::KeyShare(key_share) => {
+            Extension::KeyShare(key_share) => {
                 key_share.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::RenegotiationInfo(renegotiation_info) => {
+            Extension::RenegotiationInfo(renegotiation_info) => {
                 renegotiation_info.write_to_buffer(&mut extension_body);
             }
-            ClientHelloExtension::SessionTicket(session_ticket) => {
+            Extension::SessionTicket(session_ticket) => {
                 session_ticket.write_to_buffer(&mut extension_body);
             }
         }
@@ -438,61 +465,6 @@ impl WriteToBuffer for ClientHelloExtension {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ServerHelloExtension {
-    SupportedVersions(SupportedVersionsServerHello),
-    KeyShare(KeyShareServerHello),
-}
-
-impl ServerHelloExtension {
-    fn extension_type(&self) -> u16 {
-        match self {
-            ServerHelloExtension::KeyShare(_) => 51,
-            ServerHelloExtension::SupportedVersions(_) => 43,
-        }
-    }
-}
-
-impl ReadFromBuffer for ServerHelloExtension {
-    type Item = ServerHelloExtension;
-
-    fn read_from_buffer(buffer: &mut BytesCursor) -> Result<ServerHelloExtension, ParseError> {
-        if buffer.remaining() < 4 {
-            return Err(parse_error!());
-        }
-        let extension_type = buffer.get_u16_be();
-        let length = buffer.get_u16_be();
-
-        match extension_type {
-            43 => {
-                let supported_versions = SupportedVersionsServerHello::read_from_buffer(buffer)?;
-                return Ok(ServerHelloExtension::SupportedVersions(supported_versions));
-            },
-            51 => {
-                let key_share = KeyShareServerHello::read_from_buffer(buffer)?;
-                return Ok(ServerHelloExtension::KeyShare(key_share));
-            }
-            _ => Err(parse_error!()),
-        }
-    }
-}
-
-impl WriteToBuffer for ServerHelloExtension {
-    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
-        let mut extension_body: Vec<u8> = Vec::new();
-        match self {
-            ServerHelloExtension::KeyShare(key_share) => {
-                key_share.write_to_buffer(&mut extension_body);
-            },
-            ServerHelloExtension::SupportedVersions(supported_versions) => {
-                supported_versions.write_to_buffer(&mut extension_body);
-            },
-        }
-        buffer.put_u16_be(self.extension_type());
-        buffer.put_u16_be(extension_body.len().try_into().unwrap());
-        buffer.writer().write_all(extension_body.as_slice()).unwrap();
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ServerName {
@@ -523,39 +495,55 @@ impl WriteToBuffer for SupportedGroups {
 }
 
 #[derive(Debug, Clone)]
-pub struct SupportedVersionsClientHello {
+pub enum SupportedVersions {
+    ServerHello,
+    ClientHello
 }
 
-#[derive(Debug, Clone)]
-pub struct SupportedVersionsServerHello {
 
-}
-
-impl WriteToBuffer for SupportedVersionsClientHello {
+impl SupportedVersions {
     fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
-        buffer.put_u8(2); // 2 bytes for a single protocol version
-        buffer.put_u16_be(0x0304); // TLS 1.3
-    }
-}
-
-impl ReadFromBuffer for SupportedVersionsServerHello {
-    type Item = SupportedVersionsServerHello;
-    fn read_from_buffer(buffer: &mut BytesCursor) -> Result<SupportedVersionsServerHello, ParseError> {
-        if buffer.remaining() < 2 {
-            return Err(parse_error!());
+        match self {
+            SupportedVersions::ClientHello => {
+                buffer.put_u8(2); // 2 bytes for a single protocol version
+                buffer.put_u16_be(0x0304); // TLS 1.3
+            },
+            SupportedVersions::ServerHello => {
+                buffer.put_u16_be(0x0304); // TLS 1.3
+            }
         }
-
-        let version = buffer.get_u16_be();
-        if version != 0x0304 {
-            return Err(parse_error!());
-        }
-        return Ok(SupportedVersionsServerHello {});
+        
     }
-}
 
-impl WriteToBuffer for SupportedVersionsServerHello {
-    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
-        buffer.put_u16_be(0x0304); // TLS 1.3
+    fn read_from_buffer(context: ReadContext, buffer: &mut BytesCursor) -> Result<SupportedVersions, ParseError> {
+        match context {
+            ReadContext::ClientHello => {
+                if buffer.remaining() < 2 {
+                    return Err(parse_error!());
+                }
+                let length: usize = buffer.get_u16_be().try_into().unwrap();
+                if buffer.remaining() < 2 * length {
+                    return Err(parse_error!());
+                }
+                let mut versions: Vec<u16> = vec!();
+                for _ in 0..length {
+                    versions.push(buffer.get_u16_be());
+                }
+                Ok(SupportedVersions::ClientHello)
+            },
+            ReadContext::ServerHello => {
+                if buffer.remaining() < 2 {
+                    return Err(parse_error!());
+                }
+
+                let version = buffer.get_u16_be();
+                if version != 0x0304 {
+                    return Err(parse_error!());
+                }
+                Ok(SupportedVersions::ServerHello)
+            },
+            _ => Err(parse_error!())
+        }
     }
 }
 
@@ -600,18 +588,41 @@ impl WriteToBuffer for SignatureAlgorithmsCert {
 }
 
 #[derive(Debug, Clone)]
-pub struct KeyShareClientHello {
-    pub client_shares: Vec<KeyShareEntry>
+pub enum KeyShare {
+    ClientHello{
+        client_shares: Vec<KeyShareEntry>
+    },
+    ServerHello {
+        server_share: KeyShareEntry
+    },
 }
 
-impl WriteToBuffer for KeyShareClientHello {
+impl KeyShare {
     fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
-        let mut key_share_entries_data: Vec<u8> = Vec::new();
-        for client_share in &self.client_shares {
-            client_share.write_to_buffer(&mut key_share_entries_data);
+        match self {
+            KeyShare::ClientHello { client_shares} => {
+                let mut key_share_entries_data: Vec<u8> = Vec::new();
+                for client_share in client_shares {
+                    client_share.write_to_buffer(&mut key_share_entries_data);
+                }
+                buffer.put_u16_be(key_share_entries_data.len().try_into().unwrap());
+                buffer.writer().write_all(key_share_entries_data.as_slice()).unwrap();
+            },
+            KeyShare::ServerHello { server_share } => {
+                server_share.write_to_buffer(buffer);
+            }
         }
-        buffer.put_u16_be(key_share_entries_data.len().try_into().unwrap());
-        buffer.writer().write_all(key_share_entries_data.as_slice()).unwrap();
+    }
+
+    fn read_from_buffer(context: ReadContext, buffer: &mut BytesCursor) -> Result<KeyShare, ParseError> {
+        match context {
+            ReadContext::ServerHello => {
+                Ok(KeyShare::ServerHello {
+                    server_share: KeyShareEntry::read_from_buffer(buffer)?
+                })
+            },
+            _ => Err(parse_error!()),
+        }
     }
 }
 
@@ -723,27 +734,6 @@ impl ReadFromBuffer for KeyShareEntry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct KeyShareServerHello {
-    pub server_share: KeyShareEntry
-}
-
-impl ReadFromBuffer for KeyShareServerHello {
-    type Item = KeyShareServerHello;
-
-    fn read_from_buffer(buffer: &mut BytesCursor) -> Result<KeyShareServerHello, ParseError> {
-        Ok(KeyShareServerHello {
-            server_share: KeyShareEntry::read_from_buffer(buffer)?
-        })
-    }
-}
-
-impl WriteToBuffer for KeyShareServerHello {
-    fn write_to_buffer(&self, buffer: &mut dyn BufMut) {
-        self.server_share.write_to_buffer(buffer);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use num_bigint::BigInt;
@@ -770,15 +760,15 @@ mod tests {
                     legacy_session_id: vec!(),
                     cipher_suites: vec!(CipherSuite::TlsAes128GcmSha256, CipherSuite::TlsAes256GcmSha384),
                     extensions: vec!(
-                        super::ClientHelloExtension::SupportedVersions(
-                            super::SupportedVersionsClientHello {}
+                        super::Extension::SupportedVersions(
+                            super::SupportedVersions::ClientHello {}
                         ),
-                        super::ClientHelloExtension::ServerName(
+                        super::Extension::ServerName(
                             super::ServerName {
                                 hostname: b"www.google.com".to_vec()
                             }
                         ),
-                        super::ClientHelloExtension::SignatureAlgorithms(
+                        super::Extension::SignatureAlgorithms(
                             super::SignatureAlgorithms {
                                 supported_signature_algorithms: vec! {
                                     super::SignatureScheme::RsaPkcs1Sha256,
@@ -787,7 +777,7 @@ mod tests {
                                 }
                             }
                         ),
-                        super::ClientHelloExtension::SignatureAlgorithmsCert(
+                        super::Extension::SignatureAlgorithmsCert(
                             super::SignatureAlgorithmsCert {
                                 supported_signature_algorithms: vec! {
                                     super::SignatureScheme::RsaPkcs1Sha256,
@@ -796,15 +786,15 @@ mod tests {
                                 }
                             }
                         ),
-                        super::ClientHelloExtension::SupportedGroups(
+                        super::Extension::SupportedGroups(
                             super::SupportedGroups {
                                 groups: vec! {
                                     super::DiffieHellmanGroup::Secp256r1
                                 }
                             }
                         ),
-                        super::ClientHelloExtension::KeyShare(
-                            super::KeyShareClientHello {
+                        super::Extension::KeyShare(
+                            super::KeyShare::ClientHello {
                                 client_shares: vec!(
                                     super::KeyShareEntry {
                                         group: super::DiffieHellmanGroup::Secp256r1,

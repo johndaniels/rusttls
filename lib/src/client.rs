@@ -207,32 +207,32 @@ impl TlsClient {
         self.dh_private = Some(self.random_gen.generate_dh_key(&dh));
         let ecdhe_public_key = dh.generate_public(&self.dh_private.as_ref().unwrap());
 
-        let mut extensions: Vec<ClientHelloExtension> = vec!();
+        let mut extensions: Vec<Extension> = vec!();
 
         if self.config.server_name.is_some() {
-            extensions.push(ClientHelloExtension::ServerName(
+            extensions.push(Extension::ServerName(
                 ServerName {
                     hostname: self.config.server_name.as_ref().unwrap().clone()
                 }
             ));
         }
         if self.config.send_renegotiation_info {
-            extensions.push(ClientHelloExtension::RenegotiationInfo(RenegotiationInfo {
+            extensions.push(Extension::RenegotiationInfo(RenegotiationInfo {
                 renegotiated_connection: vec!(),
             }));
         }
-        extensions.push(ClientHelloExtension::SupportedGroups(
+        extensions.push(Extension::SupportedGroups(
             SupportedGroups {
                 groups: self.config.dh_groups.clone(),
             }
         ));
         if self.config.session_ticket.is_some() {
-            extensions.push(ClientHelloExtension::SessionTicket(SessionTicket {
+            extensions.push(Extension::SessionTicket(SessionTicket {
                 session_ticket: self.config.session_ticket.as_ref().unwrap().clone(),
             }));
         }
         if self.config.keyshare_dh_groups.is_some() {
-            extensions.push(ClientHelloExtension::KeyShare(KeyShareClientHello {
+            extensions.push(Extension::KeyShare(KeyShare::ClientHello {
                 client_shares: self.config.keyshare_dh_groups.as_ref().unwrap().iter().map(|dh_group| {
                     let private_key = self.random_gen.generate_dh_key(dh_group);
                     let public_key = dh_group.generate_public(&private_key);
@@ -243,22 +243,22 @@ impl TlsClient {
                 }).collect()
             }))
         }
-        extensions.push(ClientHelloExtension::SupportedVersions(SupportedVersionsClientHello {}));
-        extensions.push(ClientHelloExtension::SignatureAlgorithms(SignatureAlgorithms {
+        extensions.push(Extension::SupportedVersions(SupportedVersions::ClientHello));
+        extensions.push(Extension::SignatureAlgorithms(SignatureAlgorithms {
             supported_signature_algorithms: self.config.signature_algorithms.clone()
         }));
         if self.config.signature_algorithms_cert.is_some() {
-            extensions.push(ClientHelloExtension::SignatureAlgorithmsCert(SignatureAlgorithmsCert {
+            extensions.push(Extension::SignatureAlgorithmsCert(SignatureAlgorithmsCert {
                 supported_signature_algorithms: self.config.signature_algorithms_cert.as_ref().unwrap().clone(),
             }));
         }
         if self.config.psk_key_exchange_modes.is_some() {
-            extensions.push(ClientHelloExtension::PskKeyExchangeModes(PskKeyExchangeModes {
+            extensions.push(Extension::PskKeyExchangeModes(PskKeyExchangeModes {
                 ke_modes: self.config.psk_key_exchange_modes.as_ref().unwrap().clone(),
             }))
         }
         if self.config.record_size_limit.is_some() {
-            extensions.push(ClientHelloExtension::RecordSizeLimit(RecordSizeLimit {
+            extensions.push(Extension::RecordSizeLimit(RecordSizeLimit {
                 record_size_limit: self.config.record_size_limit.unwrap(),
             }))
         }
@@ -358,8 +358,8 @@ impl TlsClient {
         let mut key_exchange = None;
         for extension in server_hello.extensions {
             match extension {
-                ServerHelloExtension::KeyShare(keyshare) => {
-                    key_exchange = Some(keyshare.server_share);
+                Extension::KeyShare(KeyShare::ServerHello{server_share}) => {
+                    key_exchange = Some(server_share);
                 },
                 _ => {}
             }
@@ -594,8 +594,8 @@ mod tests {
                     0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
                 ),
                 extensions: vec!(
-                    ServerHelloExtension::KeyShare(
-                        KeyShareServerHello{
+                    Extension::KeyShare(
+                        KeyShare::ServerHello{
                             server_share: KeyShareEntry {
                                 group: DiffieHellmanGroup::X25519,
                                 key_exchange: vec!(
@@ -607,8 +607,8 @@ mod tests {
                             }
                         }
                     ),
-                    ServerHelloExtension::SupportedVersions(
-                        SupportedVersionsServerHello {}
+                    Extension::SupportedVersions(
+                        SupportedVersions::ServerHello
                     )
                 )
             }
