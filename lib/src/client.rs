@@ -142,10 +142,11 @@ struct TlsSecrets {
     client_sequence_number: Option<u64>,
     server_sequence_number: Option<u64>,
 
-    
     exporter_master_secret: Option<Vec<u8>>,
     resumption_master_secret: Option<Vec<u8>>,
-    
+
+    server_finished_key: Option<Vec<u8>>,    
+    client_finished_key: Option<Vec<u8>>,    
 }
 
 impl TlsSecrets {
@@ -162,6 +163,57 @@ impl TlsSecrets {
             server_write_key: None,
             client_sequence_number: None,
             server_sequence_number: None,
+            server_finished_key: None,
+            client_finished_key: None,
+        }
+    }
+
+    fn create_for_handshake(shared_key: &[u8], transcript_digest: &dyn Digest, cipher_suite: &CipherSuite) -> TlsSecrets {
+        println!("Shared key: {:x?}", shared_key);
+        let digest_algorithm = cipher_suite.get_digest_algorithm();
+        let salt = vec![0;digest_algorithm.result_size()];
+        let psk = vec![0;digest_algorithm.result_size()];
+        let early_secret = hkdf_extract(digest_algorithm, &salt, &psk);
+        println!("Early Secret: {:x?}", early_secret);
+        let mut digest = digest_algorithm.create();
+        let empty_hash = digest.finalize();
+        let derived = derive_secret(digest_algorithm, &early_secret, b"derived", &empty_hash, digest_algorithm.result_size());
+        println!("Derived Secret: {:x?}", derived);
+        let master_secret = hkdf_extract(digest_algorithm, &derived, shared_key);
+        println!("Master Secret: {:x?}", master_secret);
+        let transcript_hash = transcript_digest.finalize_copy();
+        println!("Transcript Hash: {:x?}", transcript_hash);
+        let client_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"c hs traffic", &transcript_hash, digest_algorithm.result_size());
+        println!("Client Secret: {:x?}", client_handshake_secret);
+        let server_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"s hs traffic", &transcript_hash, digest_algorithm.result_size());
+        println!("Server Secret: {:x?}", server_handshake_secret);
+        let client_write_key = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"key", b"", cipher_suite.key_len());
+        println!("Client Write Key: {:x?}", client_write_key);
+        let client_write_iv = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"iv", b"", cipher_suite.iv_len());
+        println!("Client Write IV: {:x?}", client_write_iv);
+        let server_write_key = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"key", b"", cipher_suite.key_len());
+        println!("Server Write Key: {:x?}", server_write_key);
+        let server_write_iv = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"iv", b"", cipher_suite.iv_len());
+        println!("Server Write Iv: {:x?}", server_write_iv);
+        let server_finished_key = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"finished", b"", digest_algorithm.result_size());
+        println!("Server Finished Key : {:x?}", server_finished_key);
+        let client_finished_key = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"finished", b"", digest_algorithm.result_size());
+        println!("Client Finished Key : {:x?}", client_finished_key);
+        TlsSecrets {
+            master_secret: Some(master_secret),
+            client_traffic_secret: Some(client_handshake_secret),
+            server_traffic_secret: Some(server_handshake_secret),
+            exporter_master_secret: None,
+            resumption_master_secret: None,
+            client_write_key: Some(client_write_key),
+            client_write_iv: Some(client_write_iv),
+            server_write_key: Some(server_write_key),
+            server_write_iv: Some(server_write_iv),
+            server_finished_key: Some(server_finished_key),
+            client_finished_key: Some(client_finished_key),
+            client_sequence_number: Some(0),
+            server_sequence_number: Some(0),
+            
         }
     }
 }
@@ -212,7 +264,7 @@ impl TlsClient {
         if self.config.server_name.is_some() {
             extensions.push(Extension::ServerName(
                 ServerName {
-                    hostname: self.config.server_name.as_ref().unwrap().clone()
+                    hostname: Some(self.config.server_name.as_ref().unwrap().clone())
                 }
             ));
         }
@@ -311,46 +363,7 @@ impl TlsClient {
     }
 
     fn create_handshake_secret(&mut self, shared_key: &[u8]) {
-        println!("Shared key: {:x?}", shared_key);
-        let digest_algorithm = self.cipher_suite.as_ref().unwrap().get_digest_algorithm();
-        let salt = vec![0;digest_algorithm.result_size()];
-        let psk = vec![0;digest_algorithm.result_size()];
-        let early_secret = hkdf_extract(digest_algorithm, &salt, &psk);
-        println!("Early Secret: {:x?}", early_secret);
-        let mut digest = digest_algorithm.create();
-        let empty_hash = digest.finalize();
-        let derived = derive_secret(digest_algorithm, &early_secret, b"derived", &empty_hash, digest_algorithm.result_size());
-        println!("Derived Secret: {:x?}", derived);
-        let master_secret = hkdf_extract(digest_algorithm, &derived, shared_key);
-        println!("Master Secret: {:x?}", master_secret);
-        let transcript_hash = self.transcript_hash.as_ref().unwrap().finalize_copy();
-        println!("Transcript Hash: {:x?}", transcript_hash);
-        let client_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"c hs traffic", &transcript_hash, digest_algorithm.result_size());
-        println!("Client Secret: {:x?}", client_handshake_secret);
-        let server_handshake_secret = derive_secret(digest_algorithm, &master_secret, b"s hs traffic", &transcript_hash, digest_algorithm.result_size());
-        println!("Server Secret: {:x?}", server_handshake_secret);
-        let cipher_suite = self.cipher_suite.as_ref().unwrap();
-        let client_write_key = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"key", b"", cipher_suite.key_len());
-        println!("Client Write Key: {:x?}", client_write_key);
-        let client_write_iv = hkdf_expand_label(digest_algorithm, &client_handshake_secret, b"iv", b"", cipher_suite.iv_len());
-        println!("Client Write IV: {:x?}", client_write_iv);
-        let server_write_key = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"key", b"", cipher_suite.key_len());
-        println!("Server Write Key: {:x?}", server_write_key);
-        let server_write_iv = hkdf_expand_label(digest_algorithm, &server_handshake_secret, b"iv", b"", cipher_suite.iv_len());
-        println!("Server Write Iv: {:x?}", server_write_iv);
-        let secrets = TlsSecrets {
-            master_secret: Some(master_secret),
-            client_traffic_secret: Some(client_handshake_secret),
-            server_traffic_secret: Some(server_handshake_secret),
-            exporter_master_secret: None,
-            resumption_master_secret: None,
-            client_write_key: Some(client_write_key),
-            client_write_iv: Some(client_write_iv),
-            server_write_key: Some(server_write_key),
-            server_write_iv: Some(server_write_iv),
-            client_sequence_number: Some(0),
-            server_sequence_number: Some(0),
-        };
+        let secrets = TlsSecrets::create_for_handshake(shared_key, self.transcript_hash.as_ref().unwrap().as_ref(), self.cipher_suite.as_ref().unwrap());
         self.secrets = Some(secrets);
     }
 
@@ -428,6 +441,7 @@ pub fn connect() -> Result<(), tokio::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::{Buf, BufMut};
     use tokio::prelude::*;
     use std::pin::Pin;
     use core::task::{Context, Poll, Waker};
@@ -438,6 +452,10 @@ mod tests {
     use futures::task::{LocalSpawnExt};
     use std::rc::Rc;
     use std::cell::RefCell;
+    use super::super::messages::tests::{
+        server_hello, client_hello, client_hello_bytes, server_hello_bytes,
+        server_encrypted_extensions, server_finished, server_certificate, server_certificate_verify,
+    };
 
     #[derive(Clone)]
     struct RecordStreamMock {
@@ -584,35 +602,7 @@ mod tests {
         spawner.spawn_local(future).unwrap();
         pool.try_run_one();
 
-        let server_message = Record::Handshake(Handshake::ServerHello(
-            ServerHello {
-                cipher_suite: CipherSuite::TlsAes128GcmSha256,
-                random: vec!(
-                    0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
-                    0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
-                    0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
-                    0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
-                ),
-                extensions: vec!(
-                    Extension::KeyShare(
-                        KeyShare::ServerHello{
-                            server_share: KeyShareEntry {
-                                group: DiffieHellmanGroup::X25519,
-                                key_exchange: vec!(
-                                    0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
-                                    0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
-                                    0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
-                                    0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
-                                )
-                            }
-                        }
-                    ),
-                    Extension::SupportedVersions(
-                        SupportedVersions::ServerHello
-                    )
-                )
-            }
-        ));
+        let server_message = server_hello();
 
         let server_bytes: Vec<u8> = server_hello_bytes();
 
@@ -620,182 +610,73 @@ mod tests {
         stream_mock.inbound_messages.borrow_mut().push_back(server_message);
         stream_mock.waker.borrow_mut().as_ref().unwrap().wake_by_ref();
 
-        let client_message = internal_mock.outbound_messages.borrow_mut().pop_front();
+        let client_message = internal_mock.outbound_messages.borrow_mut().pop_front().unwrap();
         println!("Client Message: {:?}", client_message);
         pool.run_until_stalled();
-
-        let test = client.as_ptr();
-        unsafe {
-            println!("secrets: {:x?}", (*test).secrets);
-        }
-
-        let bytes = client_message.unwrap().to_bytes();
-
-        assert_eq!(bytes, client_hello_bytes());
-    }
-
-    fn server_hello_bytes() -> Vec<u8> {
-        vec!(
-            0x16, // Handshake Protocol
-            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
-            0x00, 0x5a, // mdessage length
-            0x02,  // Server Hello
-            0x00, 0x00, 0x56, // Handshake Length
-            0x03, 0x03, // Version Number (SSL 3.3 for backwards compatibility)
-            0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 
-            0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
-            0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda,
-            0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
-            0x00, // Legacy Session ID Echo Length
-            // Empty Legacy Session ID Echo
-
-            0x13, 0x01, // Cipher (AES_128_GCM_SHA256)
-
-
-            0x00, // Legacy Compression Method
-            0x00, 0x2e, // Extensions Length
-            0x00, 0x33, // Key Share
-            0x00, 0x24, // Extension Length 
-            0x00, 0x1d, // Chosen Group: x25519
-            0x00, 0x20, // Key Exchange Length
-            0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, // Key Exchange 
-            0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1, // Key Exchange 
-            0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, // Key Exchange 
-            0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f, // Key Exchange 
-            0x00, 0x2b, // Supported Versions
-            0x00, 0x02, // Extension Length
-            0x03, 0x04, // TLS 1.3 (SSL 3.4)
-        )
-    }
-
-    fn client_hello_bytes() -> Vec<u8> {
-        vec!(
-            0x16, // TLS Handshake Protocol
-            0x03, 0x01, // SSL Version 3.1 (for backwards compatibility)
-            0x00, 0xc4, // Length
-
-            /* The ClientHello Handshake Message */
-            0x01, // Handshake Type of ClientHello
-            0, 0, 0xc0, // ClientHello Length
-            0x03, 0x03, //SSL Version 3.3 (TLS 1.2) for backwards compatibility
-            
-            0xcb, 0x34, 0xec, 0xb1, 0xe7, 0x81, 0x63, 0xba, // Random bytes
-            0x1c, 0x38, 0xc6, 0xda, 0xcb, 0x19, 0x6a, 0x6d, // Random bytes
-            0xff, 0xa2, 0x1a, 0x8d, 0x99, 0x12, 0xec, 0x18, // Random bytes
-            0xa2, 0xef, 0x62, 0x83, 0x02, 0x4d, 0xec, 0xe7, // Random bytes
-
-            0x0, // Session ID Length
-            // Session ID (no bytes)
-            0x0, 0x6, // Length of Cipher Suites
-            0x13, 0x01, // AES_128_GCM_SHA256
-            0x13, 0x03, // TLS_CHACHA20_POLY1305_SHA256
-            0x13, 0x02, // AES_256_GCM_SHA384
-
-            0x01, // Compression Methods Length
-            0x00, // Compression Methods Value (null)
-
-            0x00, 0x91, // Length of Extensions
-
-            0x00, 0x00, // Server Name Indication
-            0x00, 0x0b, // Extension Length
-            0x00, 0x09, // Server Name List Length
-            0x00, // name_type (host_name)
-            0x00, 0x06, // HostName length
-            0x73, 0x65, 0x72, 0x76, 0x65, 0x72, // "server"
-
-            0xff, 0x01, // Renegotiated Connection
-            0x00, 0x01, // Extension Length
-            0x00,       // Renegotiated Connection Length
-                        // Renegotiated Connection Data (empty)
-
-            0x00, 0x0a, // Supported Groups
-            0x00, 0x14, // Extension Length
-            0x00, 0x12, // Supported Groups Length
-            0x00, 0x1d, // x25519
-            0x00, 0x17, // secp256r1
-            0x00, 0x18, // secp384r1
-            0x00, 0x19, // secp521r1
-            0x01, 0x00, // ffdhe2048
-            0x01, 0x01, // ffdhe3072
-            0x01, 0x02, // ffdhe4096
-            0x01, 0x03, // ffdhe6144
-            0x01, 0x04, // ffdhe8192
-
-            0x00, 0x23, // Session Ticket
-            0x00, 0x00, // Session Ticket Length
-
-            0x00, 0x33, // Key Share
-            0x00, 0x26, // Extension Length
-            0x00, 0x24, // Key Share Length
-            0x00, 0x1d, // x25519
-            0x00, 0x20, // Key share data length
-
+        
+        let private_key = vec!(
+            0xb1, 0x58, 0x0e, 0xea, 0xdf, 0x6d, 0xd5, 0x89,
+            0xb8, 0xef, 0x4f, 0x2d, 0x56, 0x52, 0x57, 0x8c,
+            0xc8, 0x10, 0xe9, 0x98, 0x01, 0x91, 0xec, 0x8d,
+            0x05, 0x83, 0x08, 0xce, 0xa2, 0x16, 0xa2, 0x1e,
+        );
+        let key_share = vec!(
             0x99, 0x38, 0x1d, 0xe5, 0x60, 0xe4, 0xbd, 0x43, // Key Share
             0xd2, 0x3d, 0x8e, 0x43, 0x5a, 0x7d, 0xba, 0xfe, // Key Share
             0xb3, 0xc0, 0x6e, 0x51, 0xc1, 0x3c, 0xae, 0x4d, // Key Share
             0x54, 0x13, 0x69, 0x1e, 0x52, 0x9a, 0xaf, 0x2c, // Key Share
+        );
+        let shared_key = DiffieHellmanGroup::X25519.compute(&private_key, &key_share);
 
-            0x00, 0x2b, // Supported Versions
-            0x00, 0x03, // length
-            0x02, // Length for the versions array
-            0x03, 0x04, // TLS 1.3 (SSL 3.4)
+        let mut transcript_hash = super::super::digest::sha256::Sha256::new();
+        transcript_hash.update(&client_hello().to_transcript_bytes());
+        transcript_hash.update(&server_hello().to_transcript_bytes());
 
-            0x00, 0x0d, //signature algorithms
-            0x00, 0x20, // Extension Length
-            0x00, 0x1e, // Signature Algorithms length
-            0x04, 0x03, // ecdsa_secp256r1_sha256
-            0x05, 0x03, // ecdsa_secp384r1_sha384
-            0x06, 0x03, // ecdsa_secp521r1_sha512
-            0x02, 0x03, // ecdsa_sha1
-            0x08, 0x04, // rsa_pss_rsae_sha256
-            0x08, 0x05, // rsa_pss_rsae_sha384
-            0x08, 0x06, // rsa_pss_rsae_sha512
-            0x04, 0x01, // rsa_pkcs1_sha256
-            0x05, 0x01, // rsa_pkcs1_sha384
-            0x06, 0x01, // rsa_pkcs1_sha512
-            0x02, 0x01, // rsa_pkcs1_sha1
-            0x04, 0x02, // dsa_sha256_RESERVED
-            0x05, 0x02, // dsa_sha384_RESERVED
-            0x06, 0x02, // dsa_sha512_RESERVED
-            0x02, 0x02, // dsa_sha1_RESERVED
+        let server_secrets = TlsSecrets::create_for_handshake(&shared_key, &transcript_hash, &CipherSuite::TlsAes128GcmSha256);
+        let encrypted_extensions: Handshake  = server_encrypted_extensions();
+        let certificate: Handshake = server_certificate();
+        let certificate_verify: Handshake = server_certificate_verify();
+        let finished = server_finished();
 
-            0x00, 0x2d, // PSK Key Exchange Modes
-            0x00, 0x02, // Extension Length
-            0x01, // PSK Key Exchange Modes Length
-            0x01, // psk_dhe_ke
+        let mut transcript_bytes: Vec<u8> = vec!();
+        encrypted_extensions.write_to_buffer(&mut transcript_bytes);
+        certificate.write_to_buffer(&mut transcript_bytes);
+        certificate_verify.write_to_buffer(&mut transcript_bytes);
+        transcript_hash.update(&transcript_bytes);
+        let transcript_hash_result = transcript_hash.finalize();
+        println!("Transcript Hash: {:x?}", transcript_hash_result);
+        let finished_bytes = super::super::hmac::hmac_hash(DigestAlgorithm::Sha256, &server_secrets.server_finished_key.unwrap(), &transcript_hash_result);
+        println!("Finished Bytes: {:x?}", finished_bytes);
+        
+        let mut plaintext = transcript_bytes.clone();
+        finished.write_to_buffer(&mut plaintext);
+        plaintext.push(0x16);
+        println!("Transcript Bytes Len: {:?}", plaintext.len());
+        let mut additional_data = vec!(0x17, 0x03, 0x03);
+        additional_data.put_u16_be((plaintext.len() + 16).try_into().unwrap());
+        let result = CipherSuite::TlsAes128GcmSha256.aead(
+            &server_secrets.server_write_iv.unwrap(),
+            &server_secrets.server_write_key.unwrap(),
+            &additional_data,
+            &plaintext);
+        let mut full_message: Vec<u8> = vec!();
+        full_message.put_slice(&additional_data);
+        full_message.put_slice(&result.ciphertext);
+        println!("Tag: {:x?}", result.tag);
+        println!("Full message: {:?} {:x?}", full_message.len(), full_message);
 
-            0x00, 0x1c, // Record Size Limit
-            0x00, 0x02, // Extension Length
-            0x40, 0x01, // 16385
-        )
+
+        let test = client.as_ptr();
+        unsafe {
+            //println!("secrets: {:x?}", (*test).secrets);
+        }
+
+        let bytes = client_message.to_bytes();
+
+        assert_eq!(bytes, client_hello_bytes());
     }
 
-    fn server_encrypted_extensions()  {
+    
 
-    }
-
-    fn server_encrypted_extensions_bytes() -> Vec<u8> {
-        vec!(
-            0x08, // Encrypted Extensions
-            0x00, 0x00, 0x24, // Length
-            0x00, 0x22, // Length
-            0x00, 0x0a, // Supported Groups
-            0x00, 0x14, // Extension Length
-            0x00, 0x12, // Named Group List
-            0x00, 0x1d, // X25519
-            0x00, 0x17, //Secp256r1
-            0x00, 0x18, //Secp384r1
-            0x00, 0x19,  //Secp521r1
-            0x01, 0x00, //Ffdhe2048 
-            0x01, 0x01, //Ffdhe3072
-            0x01, 0x02, //Ffdhe4096
-            0x01, 0x03, //Ffdhe6144
-            0x01, 0x04, //Ffdhe8192
-            0x00, 0x1c, // Record Size Limit
-            0x00, 0x02, // Plugin Length
-            0x40, 0x01, // Record Size 0x4001.
-            0x00, 0x00, // Server Name
-            0x00, 0x00, // Server Name Plugin Length
-        )
-    }
+    
 }

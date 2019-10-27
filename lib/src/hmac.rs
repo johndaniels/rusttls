@@ -62,7 +62,7 @@ impl MessageAuthenticationCode for Hmac {
     }
 }
 
-fn hmac_hash(digest_algorithm: DigestAlgorithm, key: &[u8], data: &[u8]) -> Vec<u8> {
+pub fn hmac_hash(digest_algorithm: DigestAlgorithm, key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::new(digest_algorithm, key);
     hmac.update(data);
     hmac.finalize()

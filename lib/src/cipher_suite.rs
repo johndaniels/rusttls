@@ -1,7 +1,7 @@
 use super::messages::ParseError;
 use super::digest::DigestAlgorithm;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum CipherSuite {
     TlsAes128GcmSha256,
     TlsAes256GcmSha384,

@@ -1,6 +1,6 @@
 use super::messages::ParseError;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SignatureScheme {
     /* RSASSA-PKCS1-v1_5 algorithms */
     RsaPkcs1Sha256,

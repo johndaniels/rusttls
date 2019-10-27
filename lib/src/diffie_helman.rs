@@ -2,7 +2,7 @@ use super::eliptic_curve::curve25519::{curve25519, curve25519_base};
 use super::eliptic_curve::secp256r1::{secp256r1, secp256r1_base};
 use super::messages::ParseError;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DiffieHellmanGroup {
     /* Elliptic Curve Groups (ECDHE) */
     Secp256r1,
@@ -79,7 +79,7 @@ impl DiffieHellmanGroup {
             0x102 => Ok(DiffieHellmanGroup::Ffdhe4096),
             0x103 => Ok(DiffieHellmanGroup::Ffdhe6144),
             0x104 => Ok(DiffieHellmanGroup::Ffdhe8192),
-            _ => Err(ParseError::Error("Error parsing Diffie Hellman group".to_string()))
+            any => Err(ParseError::Error(format!("Error parsing Diffie Hellman group {:?}", any).to_string()))
         }
     }
 

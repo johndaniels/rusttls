@@ -20,7 +20,7 @@ const K: [u32;64] = [
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 #[derive(Clone)]
-struct Sha256 {
+pub struct Sha256 {
     state: [u32;8],
     buffer: [u8;64],
     buffer_pos: usize,
@@ -28,7 +28,7 @@ struct Sha256 {
 }
 
 impl Sha256 {
-    fn new() -> Sha256 {
+    pub fn new() -> Sha256 {
         Sha256 {
             state: [
                 0x6a09e667,

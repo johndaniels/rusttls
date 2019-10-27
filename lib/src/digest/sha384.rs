@@ -25,7 +25,7 @@ const K: [u64;80] = [
 ];
 
 #[derive(Clone)]
-struct Sha384 {
+pub struct Sha384 {
     state: [u64;8],
     buffer: [u8;128],
     buffer_pos: usize,
@@ -33,7 +33,7 @@ struct Sha384 {
 }
 
 impl Sha384 {
-    fn new() -> Sha384 {
+    pub fn new() -> Sha384 {
         Sha384 {
             state: [
                 0xcbbb9d5dc1059ed8,

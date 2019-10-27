@@ -167,7 +167,7 @@ impl Gctr {
             let mut counter_cipher = [0u8;16];
             self.aes.cipher(&self.cb, &mut counter_cipher);
             let result = xor(counter_cipher, self.buffer);
-            self.result.extend(&self.buffer[0..self.buffer_pos]);
+            self.result.extend(&result[0..self.buffer_pos]);
         }
         self.result
     }
@@ -183,6 +183,38 @@ fn ghash(key: [u8;16], data: &[u8]) -> [u8;16] {
     let mut ghash = GHash::new(key);
     ghash.update(data);
     ghash.finalize()
+}
+
+fn gcm_decrypt(iv: &[u8], aes: Aes, authenticated_data: &[u8], ciphertext: &[u8], tag: &[u8]) -> Option<Vec<u8>> {
+    assert_eq!(16, tag.len());
+    assert_eq!(iv.len(), 12);
+    let mut hash_subkey = [0u8;16];
+    aes.cipher(&[0u8;16], &mut hash_subkey);
+    let mut initial_counter = [0u8;16];
+    initial_counter[0..12].copy_from_slice(iv);
+    initial_counter[15] = 0x01;
+    let tag: [u8;16] = tag.try_into().unwrap();
+    let plaintext = gctr(incr(initial_counter), aes.clone(), ciphertext);
+    let cipher_padding_len = 16*((ciphertext.len() + 15) / 16)-ciphertext.len();
+    let authenticated_padding_len = 16*((authenticated_data.len() + 15) / 16)-authenticated_data.len();
+    let mut s_data: Vec<u8> = Vec::with_capacity(
+        ciphertext.len() + cipher_padding_len + authenticated_data.len() + authenticated_padding_len + 16
+    );
+    s_data.extend(authenticated_data);
+    s_data.extend(vec![0u8;authenticated_padding_len]);
+    s_data.extend(ciphertext);
+    s_data.extend(vec![0u8;cipher_padding_len]);
+    // Must multiply by 8 to get the bitlength
+    s_data.put_u64_be(TryInto::<u64>::try_into(authenticated_data.len()).unwrap() * 8u64);
+    s_data.put_u64_be(TryInto::<u64>::try_into(ciphertext.len()).unwrap() * 8u64);
+    let s = ghash(hash_subkey, &s_data);
+    //println!("GHASH: {:x?} {:x?}", s, s_data);
+    let t = gctr(initial_counter, aes.clone(), &s);
+    if t.as_slice() == tag {
+        Some(plaintext)
+    } else {
+        None
+    }
 }
 
 fn gcm(iv: &[u8], aes: Aes, authenticated_data: &[u8], plaintext: &[u8]) -> AeadResult {
@@ -255,10 +287,12 @@ mod tests {
         let additional_data = hex::decode(additional_data_str).unwrap();
         let plaintext = hex::decode(plaintext_str).unwrap();
         let aes = super::super::aes::Aes::aes128(&key);
-        let result = super::gcm(&iv, aes, &additional_data, &plaintext);
+        let result = super::gcm(&iv, aes.clone(), &additional_data, &plaintext);
         println!("Result: {:x?}", result);
         assert_eq!(expected_cipher, result.ciphertext);
         assert_eq!(expected_tag, result.tag);
+        let decrypt_result = super::gcm_decrypt(&iv, aes.clone(), &additional_data, &result.ciphertext, &result.tag);
+        assert_eq!(Some(plaintext.to_vec()), decrypt_result);
     }
     #[test]
     fn test_gcm_empty() {
